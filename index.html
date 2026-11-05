@@ -16,6 +16,11 @@
   <!-- Babel Standalone for JSX compilation -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+  <!-- Firebase Compat Scripts (compatibles al 100% con HTML sin bundlers ni choques con Babel) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
   <style>
     body {
       font-family: 'Inter', sans-serif;
@@ -57,26 +62,8 @@
 
   <div id="root"></div>
 
-  <!-- Script con Babel y Firebase SDK ES Modules -->
-  <script type="text/babel" data-type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { 
-      getAuth, 
-      signInAnonymously, 
-      signInWithCustomToken, 
-      signInWithEmailAndPassword, 
-      createUserWithEmailAndPassword,
-      signOut, 
-      onAuthStateChanged 
-    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { 
-      getFirestore, 
-      doc, 
-      setDoc, 
-      onSnapshot, 
-      collection 
-    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
+  <!-- Script principal con Babel -->
+  <script type="text/babel">
     const { useState, useMemo, useEffect, useRef } = React;
 
     // =========================================================================
@@ -97,76 +84,33 @@
       ? JSON.parse(__firebase_config)
       : userProvidedConfig;
 
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
-    const db = getFirestore(app);
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'tangalagua-boliche-app';
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    const auth = firebase.auth();
+    const db = firebase.firestore();
 
-    // Helper de sincronización directa adaptado estrictamente a las reglas de Firestore
-    // - Colecciones administrativas (inventory, recipes, cashiers, purchases) -> match /settings/{docId} (write: isAdmin())
-    // - Ventas de barra y tickets -> match /tickets/{ticketId} (write: auth != null)
-    // - Eventos de noche -> match /events/{eventId} (write: isAdmin())
+    // Helper de sincronización directa adaptado a las reglas de Firestore
+    // settings/* solo permite escritura si isAdmin() (admin@experienceqr.com)
+    // tickets/* permite create/update a usuarios autenticados
     const syncLiveCollection = async (collectionKey, items) => {
       try {
-        let docPath = null;
+        let docRef = null;
         if (collectionKey === 'sales') {
-          docPath = doc(db, 'tickets', 'tangalagua_pos_sales');
+          docRef = db.collection('tickets').doc('tangalagua_pos_sales');
         } else if (collectionKey === 'events') {
-          docPath = doc(db, 'events', 'tangalagua_active_events');
+          docRef = db.collection('events').doc('tangalagua_active_events');
         } else {
-          // 'inventory', 'recipes', 'cashiers', 'purchases' se guardan en /settings/{docId}
-          docPath = doc(db, 'settings', `tangalagua_${collectionKey}`);
+          docRef = db.collection('settings').doc(`tangalagua_${collectionKey}`);
         }
 
-        await setDoc(docPath, {
+        await docRef.set({
           items: items || [],
           updatedAt: new Date().toISOString()
         }, { merge: true });
-        console.log(`✓ Firestore guardado en [${docPath.path}] exitoso`);
+        console.log(`✓ Firestore guardado en [${docRef.path}] exitoso`);
       } catch (err) {
-        console.warn(`Firestore SDK aviso para [${collectionKey}], intentando persistencia REST...`, err);
-
-        try {
-          let token = null;
-          if (auth.currentUser) {
-            token = await auth.currentUser.getIdToken(true);
-          }
-
-          let pathName = '';
-          if (collectionKey === 'sales') {
-            pathName = 'tickets/tangalagua_pos_sales';
-          } else if (collectionKey === 'events') {
-            pathName = 'events/tangalagua_active_events';
-          } else {
-            pathName = `settings/tangalagua_${collectionKey}`;
-          }
-
-          const firestoreRestUrl = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/${pathName}`;
-          const headers = { 'Content-Type': 'application/json' };
-          if (token) headers['Authorization'] = `Bearer ${token}`;
-
-          const payload = {
-            fields: {
-              itemsJson: { stringValue: JSON.stringify(items || []) },
-              updatedAt: { stringValue: new Date().toISOString() }
-            }
-          };
-
-          const res = await fetch(firestoreRestUrl, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify(payload)
-          });
-
-          if (res.ok) {
-            console.log(`✓ Firestore guardado REST exitoso en [${pathName}]`);
-          } else {
-            const errData = await res.json();
-            console.error('Error REST Firestore:', errData);
-          }
-        } catch (restErr) {
-          console.error(`Error al persistir en Firestore [${collectionKey}]:`, restErr);
-        }
+        console.warn(`Aviso de permisos al guardar [${collectionKey}]:`, err.message);
       }
     };
 
@@ -397,57 +341,77 @@
       // Modales & POS States
       const [showAddCashierModal, setShowAddCashierModal] = useState(false);
       const [showPurchaseModal, setShowPurchaseModal] = useState(false);
-      // 1. Inicialización y Conexión en Vivo con Firebase / Firestore según las Reglas
+      const [purchaseToEdit, setPurchaseToEdit] = useState(null);
+      const [showRecipeModal, setShowRecipeModal] = useState(false);
+      const [showCloseCashModal, setShowCloseCashModal] = useState(false);
+      const [cashierToAssignCash, setCashierToAssignCash] = useState(null);
+      const [lastSaleTicket, setLastSaleTicket] = useState(null);
+      const [autoPrint, setAutoPrint] = useState(true);
+      const [ticketFormat, setTicketFormat] = useState('80mm');
+      const [cart, setCart] = useState([]);
+
+      // 1. Control de estado de Firebase y escucha según las reglas
       useEffect(() => {
         let isMounted = true;
 
-        const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-          if (isMounted) setFirebaseUser(user);
+        const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+          if (!isMounted) return;
+          setFirebaseUser(user);
+          setIsLiveConnected(true);
         });
 
-        // Suscripción a documentos bajo las reglas habilitadas:
-        // /settings (inventario, recetas, cajeros, compras) y /tickets (ventas)
-        const docsToListen = [
-          { key: 'inventory', ref: doc(db, 'settings', 'tangalagua_inventory') },
-          { key: 'recipes', ref: doc(db, 'settings', 'tangalagua_recipes') },
-          { key: 'cashiers', ref: doc(db, 'settings', 'tangalagua_cashiers') },
-          { key: 'purchases', ref: doc(db, 'settings', 'tangalagua_purchases') },
-          { key: 'sales', ref: doc(db, 'tickets', 'tangalagua_pos_sales') }
+        // 2. Suscripción a tickets (abierto para lectura según tus reglas: allow read: if true)
+        const unsubSales = db.collection('tickets').doc('tangalagua_pos_sales').onSnapshot(
+          (snap) => {
+            if (!isMounted || !snap.exists) return;
+            const data = snap.data();
+            if (data?.items && Array.isArray(data.items)) {
+              setSalesHistory(data.items);
+            }
+          },
+          (err) => console.warn('Aviso tickets listener:', err.message)
+        );
+
+        return () => {
+          isMounted = false;
+          unsubscribeAuth();
+          unsubSales();
+        };
+      }, []);
+
+      // 3. Suscripción a colecciones de /settings (Solo cuando el usuario es admin@experienceqr.com)
+      useEffect(() => {
+        if (!firebaseUser || firebaseUser.email !== 'admin@experienceqr.com') {
+          return;
+        }
+
+        let isMounted = true;
+        const settingsKeys = [
+          { key: 'inventory', docId: 'tangalagua_inventory' },
+          { key: 'recipes', docId: 'tangalagua_recipes' },
+          { key: 'cashiers', docId: 'tangalagua_cashiers' },
+          { key: 'purchases', docId: 'tangalagua_purchases' }
         ];
 
-        const unsubscribers = docsToListen.map(({ key, ref: docRef }) => {
-          return onSnapshot(
-            docRef,
+        const unsubs = settingsKeys.map(({ key, docId }) => {
+          return db.collection('settings').doc(docId).onSnapshot(
             (snap) => {
-              if (!isMounted) return;
-              setIsLiveConnected(true);
-              if (snap.exists()) {
-                const data = snap.data();
-                let items = Array.isArray(data?.items) ? data.items : null;
-                if (!items && data?.itemsJson) {
-                  try { items = JSON.parse(data.itemsJson); } catch (e) {}
-                }
-
-                if (items && Array.isArray(items)) {
-                  if (key === 'inventory') setInventory(items);
-                  if (key === 'recipes') setRecipes(items);
-                  if (key === 'cashiers') setCashiers(items);
-                  if (key === 'purchases') setPurchases(items);
-                  if (key === 'sales') setSalesHistory(items);
-                }
+              if (!isMounted || !snap.exists) return;
+              const data = snap.data();
+              if (data?.items && Array.isArray(data.items)) {
+                if (key === 'inventory') setInventory(data.items);
+                if (key === 'recipes') setRecipes(data.items);
+                if (key === 'cashiers') setCashiers(data.items);
+                if (key === 'purchases') setPurchases(data.items);
               }
             },
-            (error) => {
-              console.warn(`Firestore onSnapshot en [${docRef.path}]:`, error);
-              if (isMounted) setIsLiveConnected(true);
-            }
+            (err) => console.warn(`Aviso settings/${docId}:`, err.message)
           );
         });
 
         return () => {
           isMounted = false;
-          unsubscribeAuth();
-          unsubscribers.forEach((unsub) => unsub());
+          unsubs.forEach((unsub) => unsub());
         };
       }, [firebaseUser]);
 
@@ -1045,27 +1009,23 @@
         }
 
         try {
-          try {
-            if (auth.currentUser && auth.currentUser.isAnonymous) await signOut(auth);
-          } catch (logoutErr) {}
-
-          const userCredential = await signInWithEmailAndPassword(auth, emailTrimmed, passTrimmed);
+          const userCredential = await auth.signInWithEmailAndPassword(emailTrimmed, passTrimmed);
           setIsLoadingAuth(false);
           onLoginSuccess({
             role: 'ADMIN',
             email: userCredential.user.email,
             uid: userCredential.user.uid,
-            provider: 'FIREBASE_SDK'
+            provider: 'FIREBASE_AUTH'
           });
         } catch (firebaseErr) {
           setIsLoadingAuth(false);
           const errCode = firebaseErr.message || '';
-          if (errCode.includes('PASSWORD_LOGIN_DISABLED')) {
-            setErrorMsg('PASSWORD_LOGIN_DISABLED: Habilite Correo/Contraseña en Firebase Console > Sign-in method, o ingrese con la clave maestra.');
-          } else if (errCode.includes('invalid-credential') || errCode.includes('wrong-password')) {
-            setErrorMsg('Contraseña incorrecta para el usuario de Firebase.');
+          if (errCode.includes('auth/wrong-password') || errCode.includes('auth/invalid-credential')) {
+            setErrorMsg('Contraseña incorrecta para admin@experienceqr.com.');
+          } else if (errCode.includes('PASSWORD_LOGIN_DISABLED') || errCode.includes('operation-not-allowed')) {
+            setErrorMsg('En Firebase Console activa el proveedor Email/Password en Sign-in method.');
           } else {
-            setErrorMsg(`Error de Firebase Auth: ${errCode}`);
+            setErrorMsg(`Error de inicio de sesión: ${errCode}`);
           }
         }
       };
