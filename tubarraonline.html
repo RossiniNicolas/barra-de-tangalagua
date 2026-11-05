@@ -1,0 +1,2625 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TANGALAGUA - Boliche POS & Control de Barras</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
+  <!-- React & ReactDOM CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel Standalone for JSX compilation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #020617;
+      color: #f8fafc;
+    }
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    /* Estilos de Impresión Térmica */
+    @media print {
+      body {
+        background: white !important;
+        color: black !important;
+      }
+      body * {
+        visibility: hidden;
+      }
+      #active-print-ticket, #active-print-ticket * {
+        visibility: visible;
+      }
+      #active-print-ticket {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        display: block !important;
+      }
+      @page {
+        size: auto;
+        margin: 0;
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 flex flex-col antialiased selection:bg-purple-600 selection:text-white">
+
+  <div id="root"></div>
+
+  <!-- Script con Babel y Firebase SDK ES Modules -->
+  <script type="text/babel" data-type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { 
+      getAuth, 
+      signInAnonymously, 
+      signInWithCustomToken, 
+      signInWithEmailAndPassword, 
+      createUserWithEmailAndPassword,
+      signOut, 
+      onAuthStateChanged 
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { 
+      getFirestore, 
+      doc, 
+      setDoc, 
+      onSnapshot, 
+      collection 
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    const { useState, useMemo, useEffect, useRef } = React;
+
+    // =========================================================================
+    // ========================== FIREBASE CONFIG & INIT =======================
+    // =========================================================================
+    const userProvidedConfig = {
+      apiKey: "AIzaSyBdPMtCtA9s7NjybzvO3Jz4amM07n6cKRU",
+      authDomain: "tupedido-6be53.firebaseapp.com",
+      databaseURL: "https://tupedido-6be53.firebaseio.com",
+      projectId: "tupedido-6be53",
+      storageBucket: "tupedido-6be53.firebasestorage.app",
+      messagingSenderId: "306060611132",
+      appId: "1:306060611132:web:b73ff8e79ef0e340dabd39",
+      measurementId: "G-S9YH6K6L0Z"
+    };
+
+    const firebaseConfig = typeof __firebase_config !== 'undefined' && __firebase_config
+      ? JSON.parse(__firebase_config)
+      : userProvidedConfig;
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'tangalagua-boliche-app';
+
+    // Helper de sincronización directa a Firestore
+    const syncLiveCollection = async (collectionKey, items) => {
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'boliche_state', collectionKey), {
+          items,
+          updatedAt: new Date().toISOString()
+        });
+      } catch (err) {
+        console.error(`Error al escribir en vivo en Firestore [${collectionKey}]:`, err);
+      }
+    };
+
+    // =========================================================================
+    // ========================== ICONOS SVG INLINE ============================
+    // =========================================================================
+    const Icon = ({ path, className = "w-4 h-4", fill = "none", stroke = "currentColor", strokeWidth = 2 }) => (
+      <svg className={className} viewBox="0 0 24 24" fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+        {path}
+      </svg>
+    );
+
+    const Icons = {
+      ShieldCheck: (props) => <Icon {...props} path={<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></>} />,
+      DollarSign: (props) => <Icon {...props} path={<><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>} />,
+      LogOut: (props) => <Icon {...props} path={<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>} />,
+      LogIn: (props) => <Icon {...props} path={<><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></>} />,
+      Radio: (props) => <Icon {...props} path={<><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></>} />,
+      BarChart3: (props) => <Icon {...props} path={<><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></>} />,
+      TrendingUp: (props) => <Icon {...props} path={<><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></>} />,
+      Handshake: (props) => <Icon {...props} path={<><path d="m11 17 2 2a1 1 0 0 0 1.4 0l4.3-4.3a1 1 0 0 0 0-1.4L15 10l-4 4"/><path d="m18 11 3.3-3.3a1 1 0 0 0 0-1.4l-4.6-4.6a1 1 0 0 0-1.4 0L12 5"/><path d="m2 14 6.7 6.7a1 1 0 0 0 1.4 0l2.9-2.9"/></>} />,
+      PieChart: (props) => <Icon {...props} path={<><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></>} />,
+      Users: (props) => <Icon {...props} path={<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></>} />,
+      Receipt: (props) => <Icon {...props} path={<><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 17.5v-11"/></>} />,
+      Layers: (props) => <Icon {...props} path={<><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></>} />,
+      Package: (props) => <Icon {...props} path={<><path d="m7.5 4.27 9 5.15"/><polyline points="21 8 21 19 12 24 3 19 3 8 12 3 21 8"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></>} />,
+      Printer: (props) => <Icon {...props} path={<><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></>} />,
+      Trash2: (props) => <Icon {...props} path={<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></>} />,
+      Edit3: (props) => <Icon {...props} path={<><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></>} />,
+      Plus: (props) => <Icon {...props} path={<><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>} />,
+      CheckCircle2: (props) => <Icon {...props} path={<><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></>} />,
+      AlertTriangle: (props) => <Icon {...props} path={<><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>} />,
+      Wallet: (props) => <Icon {...props} path={<><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></>} />,
+      ChevronDown: (props) => <Icon {...props} path={<><polyline points="6 9 12 15 18 9"/></>} />,
+      ChevronUp: (props) => <Icon {...props} path={<><polyline points="18 15 12 9 6 15"/></>} />,
+      ShoppingCart: (props) => <Icon {...props} path={<><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></>} />,
+      Banknote: (props) => <Icon {...props} path={<><rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01m11.99 0h.01"/></>} />,
+      QrCode: (props) => <Icon {...props} path={<><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></>} />,
+      CreditCard: (props) => <Icon {...props} path={<><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></>} />,
+      KeyRound: (props) => <Icon {...props} path={<><path d="M2 18v3c0 .6.4 1 1 1h4v-3h3v-3h2l1.4-1.4a6.5 6.5 0 1 0-4-4Z"/><circle cx="16.5" cy="7.5" r=".5"/></>} />,
+      RefreshCw: (props) => <Icon {...props} path={<><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></>} />,
+      Info: (props) => <Icon {...props} path={<><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></>} />
+    };
+
+    // =========================================================================
+    // ========================== INITIAL DATA =================================
+    // =========================================================================
+    const INITIAL_INVENTORY = [];
+
+    const INITIAL_RECIPES = [];
+
+    const INITIAL_CASHIERS = [];
+
+    const INITIAL_EVENTS = [];
+
+    // =========================================================================
+    // ===================== RUTINAS DE TICKET TÉRMICO =========================
+    // =========================================================================
+    function generateTicketHtml(sale, format = '80mm') {
+      const widthStyle = format === '58mm' ? 'max-w-[48mm] w-[48mm]' : 'max-w-[72mm] w-[72mm]';
+      return (
+        <div className={`ticket-print-area font-mono text-[11px] leading-snug text-black bg-white p-2 mx-auto ${widthStyle}`}>
+          <div className="text-center">
+            <div className="font-black text-sm uppercase tracking-wider">TANGALAGUA</div>
+            <div className="text-[10px]">BAR & DRINKS MANAGEMENT</div>
+            <div className="text-[10px] mt-1">Fecha: {sale.date} {sale.timestamp}</div>
+            <div className="text-[10px]">Barra: {sale.station}</div>
+            <div className="text-[10px]">Cajero: {sale.cashierName}</div>
+            <div className="border-t border-dashed border-black my-1.5" />
+            <div className="text-[10px] font-bold">ORDEN DE DESPACHO</div>
+            <div className="text-2xl font-black my-1"># {sale.ticketNumber}</div>
+          </div>
+
+          <div className="border-t border-dashed border-black my-1.5" />
+          <div className="flex justify-between font-bold text-[10px]">
+            <span>CANT / ARTICULO</span>
+            <span>IMPORTE</span>
+          </div>
+          <div className="border-t border-dashed border-black my-1" />
+
+          {sale.items.map((item, idx) => (
+            <div key={idx} className="my-1">
+              <div className="flex justify-between">
+                <span className="font-bold">{item.qty}x {item.name}</span>
+                <span>${(item.price * item.qty).toLocaleString('es-AR')}</span>
+              </div>
+              {item.ingredientsSummary && (
+                <div className="text-[9px] text-gray-700 pl-2">↳ Insumos: {item.ingredientsSummary}</div>
+              )}
+            </div>
+          ))}
+
+          <div className="border-t border-dashed border-black my-1.5" />
+          <div className="flex justify-between font-black text-sm">
+            <span>TOTAL:</span>
+            <span>${sale.total.toLocaleString('es-AR')}</span>
+          </div>
+          <div className="flex justify-between text-[10px] mt-0.5">
+            <span>Forma de Pago:</span>
+            <span className="font-bold">{sale.paymentMethod}</span>
+          </div>
+          <div className="border-t border-dashed border-black my-2" />
+          <div className="text-center mt-1">
+            <div className="font-bold text-xs uppercase">CANJEAR EN BARRA</div>
+            <div className="text-[8px] text-gray-600">Válido únicamente para la noche de emisión</div>
+            <div className="tracking-widest mt-1 font-bold text-[10px]">* {sale.id} *</div>
+          </div>
+        </div>
+      );
+    }
+
+    function triggerThermalPrint(sale, format = '80mm') {
+      try {
+        const widthMm = format === '58mm' ? '48mm' : '72mm';
+        const printContent = `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Ticket #${sale.ticketNumber} - TANGALAGUA</title>
+            <style>
+              @page { size: auto; margin: 0; }
+              body {
+                margin: 0;
+                padding: 4px;
+                font-family: 'Courier New', Courier, monospace;
+                font-size: 11px;
+                line-height: 1.25;
+                color: #000;
+                background: #fff;
+                width: ${widthMm};
+                max-width: ${widthMm};
+              }
+              .text-center { text-align: center; }
+              .bold { font-weight: bold; }
+              .divider { border-top: 1px dashed #000; margin: 4px 0; }
+              .row { display: flex; justify-content: space-between; margin: 2px 0; }
+              .big-ticket { font-size: 22px; font-weight: 900; margin: 3px 0; text-align: center; }
+              .ingredients { font-size: 9px; color: #444; padding-left: 6px; }
+            </style>
+          </head>
+          <body>
+            <div class="text-center">
+              <div class="bold" style="font-size:15px; text-transform:uppercase;">TANGALAGUA</div>
+              <div style="font-size:10px;">BAR & DRINKS MANAGEMENT</div>
+              <div style="font-size:10px; margin-top:2px;">Fecha: ${sale.date} ${sale.timestamp}</div>
+              <div style="font-size:10px;">Barra: ${sale.station}</div>
+              <div style="font-size:10px;">Cajero: ${sale.cashierName}</div>
+              <div class="divider"></div>
+              <div style="font-size:10px; font-weight:bold;">ORDEN DE DESPACHO</div>
+              <div class="big-ticket"># ${sale.ticketNumber}</div>
+            </div>
+            <div class="divider"></div>
+            <div class="row bold" style="font-size:10px;">
+              <span>CANT / ARTICULO</span>
+              <span>IMPORTE</span>
+            </div>
+            <div class="divider"></div>
+            ${sale.items.map((item) => `
+              <div>
+                <div class="row">
+                  <span class="bold">${item.qty}x ${item.name}</span>
+                  <span>$${(item.price * item.qty).toLocaleString('es-AR')}</span>
+                </div>
+                ${item.ingredientsSummary ? `<div class="ingredients">↳ Insumos: ${item.ingredientsSummary}</div>` : ''}
+              </div>
+            `).join('')}
+            <div class="divider"></div>
+            <div class="row bold" style="font-size: 14px;">
+              <span>TOTAL:</span>
+              <span>$${sale.total.toLocaleString('es-AR')}</span>
+            </div>
+            <div class="row" style="font-size: 10px;">
+              <span>Forma de Pago:</span>
+              <span class="bold">${sale.paymentMethod}</span>
+            </div>
+            <div class="divider"></div>
+            <div class="text-center" style="margin-top: 6px;">
+              <div class="bold" style="font-size: 11px;">CANJEAR EN BARRA</div>
+              <div style="font-size: 8px;">Válido únicamente para la noche de emisión</div>
+              <div style="letter-spacing: 2px; margin-top: 4px; font-size: 10px;">* ${sale.id} *</div>
+            </div>
+          </body>
+          </html>
+        `;
+
+        const printWindow = window.open('', '_blank', 'width=350,height=550');
+        if (printWindow) {
+          printWindow.document.open();
+          printWindow.document.write(printContent);
+          printWindow.document.close();
+          printWindow.focus();
+          setTimeout(() => {
+            printWindow.print();
+            printWindow.close();
+          }, 250);
+          return;
+        }
+
+        window.print();
+      } catch (err) {
+        console.error('Error al imprimir ticket térmico:', err);
+        window.print();
+      }
+    }
+
+    // =========================================================================
+    // ========================== COMPONENTE PRINCIPAL =========================
+    // =========================================================================
+    function App() {
+      const [firebaseUser, setFirebaseUser] = useState(null);
+      const [isLiveConnected, setIsLiveConnected] = useState(false);
+
+      const [session, setSession] = useState(null);
+      const [adminTab, setAdminTab] = useState('DASHBOARD');
+      const [currentCashierId, setCurrentCashierId] = useState('csh-1');
+
+      const [inventory, setInventory] = useState(INITIAL_INVENTORY);
+      const [recipes, setRecipes] = useState(INITIAL_RECIPES);
+      const [cashiers, setCashiers] = useState(INITIAL_CASHIERS);
+      const [events, setEvents] = useState(INITIAL_EVENTS);
+      const [adminPassword, setAdminPassword] = useState('admin123');
+
+      const [salesHistory, setSalesHistory] = useState([]);
+
+      const [purchases, setPurchases] = useState([]);
+
+      // Modales & POS States
+      const [showAddCashierModal, setShowAddCashierModal] = useState(false);
+      const [showPurchaseModal, setShowPurchaseModal] = useState(false);
+      const [purchaseToEdit, setPurchaseToEdit] = useState(null);
+      const [showRecipeModal, setShowRecipeModal] = useState(false);
+      const [showCloseCashModal, setShowCloseCashModal] = useState(false);
+      const [cashierToAssignCash, setCashierToAssignCash] = useState(null);
+      const [lastSaleTicket, setLastSaleTicket] = useState(null);
+      const [autoPrint, setAutoPrint] = useState(true);
+      const [ticketFormat, setTicketFormat] = useState('80mm');
+      const [cart, setCart] = useState([]);
+
+      // 1. Inicialización y Conexión en Vivo con Firebase / Firestore
+      useEffect(() => {
+        let isMounted = true;
+
+        const initAuthAndLive = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (err) {
+            console.warn('Nota Auth: Ingresando en modo directo Firestore sin token:', err);
+          }
+        };
+
+        initAuthAndLive();
+
+        const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+          if (isMounted) setFirebaseUser(user);
+        });
+
+        // Escucha en vivo de Firestore (no depende de que auth devuelva user si está configurado para acceso público)
+        const publicDataCollection = collection(db, 'artifacts', appId, 'public', 'data', 'boliche_state');
+        const unsubscribeSnapshot = onSnapshot(
+          publicDataCollection,
+          (snapshot) => {
+            if (!isMounted) return;
+            setIsLiveConnected(true);
+            snapshot.forEach((documentSnap) => {
+              const data = documentSnap.data();
+              if (documentSnap.id === 'inventory' && Array.isArray(data?.items)) setInventory(data.items);
+              if (documentSnap.id === 'recipes' && Array.isArray(data?.items)) setRecipes(data.items);
+              if (documentSnap.id === 'cashiers' && Array.isArray(data?.items)) setCashiers(data.items);
+              if (documentSnap.id === 'purchases' && Array.isArray(data?.items)) setPurchases(data.items);
+              if (documentSnap.id === 'sales' && Array.isArray(data?.items)) setSalesHistory(data.items);
+            });
+          },
+          (error) => {
+            console.warn('Firestore onSnapshot aviso:', error);
+            if (isMounted) {
+              // Si la suscripción websocket se demora, probamos escribir un pulso de salud
+              setIsLiveConnected(true);
+            }
+          }
+        );
+
+        return () => {
+          isMounted = false;
+          unsubscribeAuth();
+          unsubscribeSnapshot();
+        };
+      }, []);
+
+      const activeCashier = useMemo(
+        () => cashiers.find((c) => c.id === currentCashierId) || cashiers[0],
+        [cashiers, currentCashierId]
+      );
+
+      const criticalItems = useMemo(
+        () => inventory.filter((item) => item.currentStockMl <= item.minAlertMl),
+        [inventory]
+      );
+
+      const handleLogout = () => {
+        setSession(null);
+        setCart([]);
+      };
+
+      const handleToggleCashierStatus = (id) => {
+        const updated = cashiers.map((c) => (c.id === id ? { ...c, active: !c.active } : c));
+        setCashiers(updated);
+        syncLiveCollection('cashiers', updated);
+      };
+
+      const handleAddCashier = (newCashier) => {
+        const updated = [...cashiers, newCashier];
+        setCashiers(updated);
+        syncLiveCollection('cashiers', updated);
+        setShowAddCashierModal(false);
+      };
+
+      const handleDeleteCashier = (id) => {
+        const remaining = cashiers.filter((c) => c.id !== id);
+        if (currentCashierId === id && remaining.length > 0) setCurrentCashierId(remaining[0].id);
+        setCashiers(remaining);
+        syncLiveCollection('cashiers', remaining);
+      };
+
+      const handleUpdateCashierInitialCash = (cashierId, newInitialCash) => {
+        const updated = cashiers.map((c) => (c.id === cashierId ? { ...c, initialCash: newInitialCash } : c));
+        setCashiers(updated);
+        syncLiveCollection('cashiers', updated);
+        setCashierToAssignCash(null);
+      };
+
+      const handleRegisterConsignmentPayment = (purchaseId, amount) => {
+        const updated = purchases.map((p) => {
+          if (p.id === purchaseId) {
+            const currentPaid = p.paidAmount || 0;
+            return { ...p, paidAmount: Math.min(p.totalAmount, currentPaid + amount) };
+          }
+          return p;
+        });
+        setPurchases(updated);
+        syncLiveCollection('purchases', updated);
+      };
+
+      const handleSavePurchase = (invoiceData) => {
+        if (purchaseToEdit) {
+          const oldPurchase = purchases.find((p) => p.id === purchaseToEdit.id);
+          const newInventory = inventory.map((invItem) => {
+            let currentStock = invItem.currentStockMl;
+            if (oldPurchase) {
+              const oldItem = oldPurchase.items.find((bi) => bi.inventoryId === invItem.id);
+              if (oldItem) currentStock = Math.max(0, currentStock - oldItem.addedMl);
+            }
+            const newItem = invoiceData.items.find((bi) => bi.inventoryId === invItem.id);
+            if (newItem) {
+              currentStock += newItem.addedMl;
+              return {
+                ...invItem,
+                currentStockMl: currentStock,
+                costPerBottle: Math.round(newItem.cost / newItem.bottles)
+              };
+            }
+            return { ...invItem, currentStockMl: currentStock };
+          });
+
+          const newPurchases = purchases.map((p) => (p.id === purchaseToEdit.id ? { ...invoiceData, id: p.id } : p));
+          setInventory(newInventory);
+          setPurchases(newPurchases);
+          syncLiveCollection('inventory', newInventory);
+          syncLiveCollection('purchases', newPurchases);
+          setPurchaseToEdit(null);
+        } else {
+          const newPurchases = [invoiceData, ...purchases];
+          const newInventory = inventory.map((invItem) => {
+            const boughtItem = invoiceData.items.find((bi) => bi.inventoryId === invItem.id);
+            if (boughtItem) {
+              return {
+                ...invItem,
+                currentStockMl: invItem.currentStockMl + boughtItem.addedMl,
+                costPerBottle: Math.round(boughtItem.cost / boughtItem.bottles)
+              };
+            }
+            return invItem;
+          });
+
+          setPurchases(newPurchases);
+          setInventory(newInventory);
+          syncLiveCollection('purchases', newPurchases);
+          syncLiveCollection('inventory', newInventory);
+        }
+        setShowPurchaseModal(false);
+      };
+
+      const handleDeletePurchase = (purchaseId) => {
+        const purchaseToDelete = purchases.find((p) => p.id === purchaseId);
+        if (!purchaseToDelete) return;
+
+        const newInventory = inventory.map((invItem) => {
+          const itemInPurchase = purchaseToDelete.items.find((bi) => bi.inventoryId === invItem.id);
+          if (itemInPurchase) {
+            return {
+              ...invItem,
+              currentStockMl: Math.max(0, invItem.currentStockMl - itemInPurchase.addedMl)
+            };
+          }
+          return invItem;
+        });
+
+        const newPurchases = purchases.filter((p) => p.id !== purchaseId);
+        setInventory(newInventory);
+        setPurchases(newPurchases);
+        syncLiveCollection('inventory', newInventory);
+        syncLiveCollection('purchases', newPurchases);
+      };
+
+      const handleSaveRecipe = (newRecipe) => {
+        const updated = [...recipes, newRecipe];
+        setRecipes(updated);
+        syncLiveCollection('recipes', updated);
+        setShowRecipeModal(false);
+      };
+
+      const handleAddToCart = (recipe) => {
+        setCart((prev) => {
+          const existing = prev.find((item) => item.id === recipe.id);
+          if (existing) {
+            return prev.map((item) => (item.id === recipe.id ? { ...item, qty: item.qty + 1 } : item));
+          }
+          return [...prev, { ...recipe, qty: 1 }];
+        });
+      };
+
+      const handleRemoveFromCart = (recipeId) => {
+        setCart((prev) =>
+          prev
+            .map((item) => (item.id === recipeId ? { ...item, qty: item.qty - 1 } : item))
+            .filter((item) => item.qty > 0)
+        );
+      };
+
+      const handleDeleteItemFromCart = (recipeId) => {
+        setCart((prev) => prev.filter((item) => item.id !== recipeId));
+      };
+
+      const handleProcessSale = (paymentMethod) => {
+        if (cart.length === 0) return;
+
+        const stockDeductions = {};
+        cart.forEach((cartItem) => {
+          cartItem.ingredients.forEach((ing) => {
+            const requiredMl = ing.cc * cartItem.qty;
+            stockDeductions[ing.inventoryId] = (stockDeductions[ing.inventoryId] || 0) + requiredMl;
+          });
+        });
+
+        const newInventory = inventory.map((item) => {
+          const used = stockDeductions[item.id] || 0;
+          return {
+            ...item,
+            currentStockMl: Math.max(0, item.currentStockMl - used)
+          };
+        });
+
+        const saleTotal = cart.reduce((acc, it) => acc + it.price * it.qty, 0);
+        const newTxId = `tx-${Date.now().toString().slice(-4)}`;
+        const nextTicketNum = String(salesHistory.length + 101);
+
+        const newSale = {
+          id: newTxId,
+          ticketNumber: nextTicketNum,
+          cashierId: activeCashier.id,
+          cashierName: activeCashier.name,
+          station: activeCashier.station,
+          date: new Date().toISOString().split('T')[0],
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          items: cart.map((c) => ({
+            name: c.name,
+            qty: c.qty,
+            price: c.price,
+            ingredientsSummary: c.ingredients.map((i) => `${i.cc * c.qty}cc ${i.name}`).join(', ')
+          })),
+          total: saleTotal,
+          paymentMethod
+        };
+
+        const newSalesHistory = [newSale, ...salesHistory];
+        const newCashiers = cashiers.map((c) =>
+          c.id === activeCashier.id ? { ...c, totalSales: (c.totalSales || 0) + saleTotal } : c
+        );
+
+        setInventory(newInventory);
+        setSalesHistory(newSalesHistory);
+        setCashiers(newCashiers);
+
+        syncLiveCollection('inventory', newInventory);
+        syncLiveCollection('sales', newSalesHistory);
+        syncLiveCollection('cashiers', newCashiers);
+
+        setCart([]);
+        setLastSaleTicket(newSale);
+
+        if (autoPrint) {
+          triggerThermalPrint(newSale, ticketFormat);
+        }
+      };
+
+      if (!session) {
+        return (
+          <LoginScreen
+            cashiers={cashiers}
+            adminPassword={adminPassword}
+            isLiveConnected={isLiveConnected}
+            onLoginSuccess={(newSession) => {
+              setSession(newSession);
+              if (newSession.role === 'CASHIER') {
+                setCurrentCashierId(newSession.cashierId);
+              }
+            }}
+          />
+        );
+      }
+
+      const role = session.role;
+
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none relative">
+          {/* Contenedor DOM para impresión */}
+          {lastSaleTicket && (
+            <div id="active-print-ticket" className="hidden">
+              {generateTicketHtml(lastSaleTicket, ticketFormat)}
+            </div>
+          )}
+
+          {/* Top Header */}
+          <header className="bg-slate-900 border-b border-slate-800 px-6 py-3 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 to-pink-500 flex items-center justify-center font-black text-xl shadow-lg shadow-purple-600/30">
+                ⚡
+              </div>
+              <div>
+                <h1 className="text-lg font-black tracking-tight text-white flex items-center gap-2">
+                  TANGALAGUA <span className="text-xs bg-purple-950 text-purple-400 border border-purple-800 px-2 py-0.5 rounded-full font-bold">CONTROL DE BARRA</span>
+                </h1>
+                <p className="text-xs text-slate-400">Descuento milimétrico en CC & Facturación Mayorista</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl border ${
+                    isLiveConnected
+                      ? 'bg-emerald-950/80 border-emerald-600/70 text-emerald-400'
+                      : 'bg-amber-950/80 border-amber-600/70 text-amber-300'
+                  }`}
+                >
+                  <Icons.Radio className={`w-3.5 h-3.5 ${isLiveConnected ? 'text-emerald-400 animate-pulse' : 'text-amber-400'}`} />
+                  <span className="hidden sm:inline">
+                    {isLiveConnected ? 'Firebase En Vivo' : 'Conectando a Firebase...'}
+                  </span>
+                </div>
+
+                <span
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl border ${
+                    role === 'ADMIN'
+                      ? 'bg-purple-950/80 border-purple-600 text-purple-300'
+                      : 'bg-emerald-950/80 border-emerald-600 text-emerald-300'
+                  }`}
+                >
+                  {role === 'ADMIN' ? (
+                    <>
+                      <Icons.ShieldCheck className="w-4 h-4 text-purple-400" />
+                      <span>Administrador</span>
+                    </>
+                  ) : (
+                    <>
+                      <Icons.DollarSign className="w-4 h-4 text-emerald-400" />
+                      <span>{activeCashier?.name} ({activeCashier?.station})</span>
+                    </>
+                  )}
+                </span>
+
+                <button
+                  onClick={handleLogout}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl bg-slate-800 hover:bg-rose-950/60 text-slate-300 hover:text-rose-300 border border-slate-700 hover:border-rose-700/50 transition-all"
+                  title="Cerrar Sesión"
+                >
+                  <Icons.LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Salir</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* Main Body */}
+          {role === 'ADMIN' ? (
+            <div className="flex-1 flex overflow-hidden">
+              {/* Sidebar Navegación */}
+              <aside className="w-64 bg-slate-900/80 border-r border-slate-800 p-4 shrink-0 flex flex-col justify-between">
+                <nav className="space-y-1.5">
+                  <SidebarBtn
+                    active={adminTab === 'DASHBOARD'}
+                    onClick={() => setAdminTab('DASHBOARD')}
+                    icon={<Icons.BarChart3 className="w-5 h-5" />}
+                    label="Tablero Principal"
+                  />
+                  <SidebarBtn
+                    active={adminTab === 'ANALYTICS'}
+                    onClick={() => setAdminTab('ANALYTICS')}
+                    icon={<Icons.TrendingUp className="w-5 h-5" />}
+                    label="Estadísticas & Gráficos"
+                  />
+                  <SidebarBtn
+                    active={adminTab === 'CONSIGNMENT'}
+                    onClick={() => setAdminTab('CONSIGNMENT')}
+                    icon={<Icons.Handshake className="w-5 h-5" />}
+                    label="Consignación & Eventos"
+                    badge={purchases.filter((p) => p.isConsignment && (p.paidAmount || 0) < p.totalAmount).length}
+                  />
+                  <SidebarBtn
+                    active={adminTab === 'CONSIGNMENT_STOCK'}
+                    onClick={() => setAdminTab('CONSIGNMENT_STOCK')}
+                    icon={<Icons.PieChart className="w-5 h-5" />}
+                    label="Stock s/ Consignación"
+                  />
+                  <SidebarBtn
+                    active={adminTab === 'CASHIERS'}
+                    onClick={() => setAdminTab('CASHIERS')}
+                    icon={<Icons.Users className="w-5 h-5" />}
+                    label="Gestión de Cajeros"
+                    badge={cashiers.filter((c) => c.active).length}
+                  />
+                  <SidebarBtn
+                    active={adminTab === 'PURCHASES'}
+                    onClick={() => setAdminTab('PURCHASES')}
+                    icon={<Icons.Receipt className="w-5 h-5" />}
+                    label="Facturación & Compras"
+                  />
+                  <SidebarBtn
+                    active={adminTab === 'RECIPES'}
+                    onClick={() => setAdminTab('RECIPES')}
+                    icon={<Icons.Layers className="w-5 h-5" />}
+                    label="Escandallos / Recetas"
+                    badge={recipes.length}
+                  />
+                  <SidebarBtn
+                    active={adminTab === 'INVENTORY'}
+                    onClick={() => setAdminTab('INVENTORY')}
+                    icon={<Icons.Package className="w-5 h-5" />}
+                    label="Control de Stock (cc)"
+                    alertCount={criticalItems.length}
+                  />
+                </nav>
+
+                <div className="p-3 bg-purple-950/40 border border-purple-800/40 rounded-xl text-xs space-y-1">
+                  <div className="flex items-center gap-1.5 text-purple-300 font-bold">
+                    <Icons.Printer className="w-3.5 h-3.5" /> Impresora Térmica
+                  </div>
+                  <p className="text-slate-400 text-[11px]">Salida configurada para corte en {ticketFormat}.</p>
+                </div>
+              </aside>
+
+              {/* Contenido Principal Admin */}
+              <main className="flex-1 overflow-y-auto p-6 bg-slate-950">
+                {adminTab === 'DASHBOARD' && (
+                  <DashboardView
+                    inventory={inventory}
+                    salesHistory={salesHistory}
+                    cashiers={cashiers}
+                    recipes={recipes}
+                    onNavigate={(tab) => setAdminTab(tab)}
+                  />
+                )}
+                {adminTab === 'ANALYTICS' && (
+                  <AnalyticsView
+                    salesHistory={salesHistory}
+                    purchases={purchases}
+                    cashiers={cashiers}
+                    recipes={recipes}
+                  />
+                )}
+                {adminTab === 'CONSIGNMENT' && (
+                  <ConsignmentView
+                    purchases={purchases}
+                    inventory={inventory}
+                    recipes={recipes}
+                    salesHistory={salesHistory}
+                    events={events}
+                    onRegisterPayment={handleRegisterConsignmentPayment}
+                  />
+                )}
+                {adminTab === 'CONSIGNMENT_STOCK' && (
+                  <ConsignmentStockView
+                    purchases={purchases}
+                    inventory={inventory}
+                    recipes={recipes}
+                    salesHistory={salesHistory}
+                    events={events}
+                  />
+                )}
+                {adminTab === 'CASHIERS' && (
+                  <CashiersView
+                    cashiers={cashiers}
+                    onToggleStatus={handleToggleCashierStatus}
+                    onDeleteCashier={handleDeleteCashier}
+                    onOpenCreateModal={() => setShowAddCashierModal(true)}
+                    onOpenAssignCashModal={(cashier) => setCashierToAssignCash(cashier)}
+                  />
+                )}
+                {adminTab === 'PURCHASES' && (
+                  <PurchasesView
+                    purchases={purchases}
+                    inventory={inventory}
+                    onOpenPurchaseModal={() => {
+                      setPurchaseToEdit(null);
+                      setShowPurchaseModal(true);
+                    }}
+                    onEditPurchase={(purchase) => {
+                      setPurchaseToEdit(purchase);
+                      setShowPurchaseModal(true);
+                    }}
+                    onDeletePurchase={handleDeletePurchase}
+                  />
+                )}
+                {adminTab === 'RECIPES' && (
+                  <RecipesView
+                    recipes={recipes}
+                    inventory={inventory}
+                    onOpenRecipeModal={() => setShowRecipeModal(true)}
+                  />
+                )}
+                {adminTab === 'INVENTORY' && (
+                  <InventoryView
+                    inventory={inventory}
+                    salesHistory={salesHistory}
+                    recipes={recipes}
+                    purchases={purchases}
+                    criticalItems={criticalItems}
+                    onOpenRestockModal={() => setShowPurchaseModal(true)}
+                    onUpdateStock={(itemId, deltaMl) => {
+                      const updated = inventory.map((inv) =>
+                        inv.id === itemId
+                          ? { ...inv, currentStockMl: Math.max(0, inv.currentStockMl + deltaMl) }
+                          : inv
+                      );
+                      setInventory(updated);
+                      syncLiveCollection('inventory', updated);
+                    }}
+                  />
+                )}
+              </main>
+            </div>
+          ) : (
+            <CashierPosView
+              activeCashier={activeCashier}
+              salesHistory={salesHistory}
+              recipes={recipes}
+              inventory={inventory}
+              cart={cart}
+              onAddToCart={handleAddToCart}
+              onRemoveFromCart={handleRemoveFromCart}
+              onDeleteItemFromCart={handleDeleteItemFromCart}
+              onClearCart={() => setCart([])}
+              onProcessSale={handleProcessSale}
+              autoPrint={autoPrint}
+              onToggleAutoPrint={() => setAutoPrint((prev) => !prev)}
+              ticketFormat={ticketFormat}
+              onChangeTicketFormat={setTicketFormat}
+              onOpenCloseCashModal={() => setShowCloseCashModal(true)}
+            />
+          )}
+
+          {/* Modales Globales */}
+          {showAddCashierModal && (
+            <AddCashierModal
+              onClose={() => setShowAddCashierModal(false)}
+              onAdd={handleAddCashier}
+            />
+          )}
+          {cashierToAssignCash && (
+            <AssignCashModal
+              cashier={cashierToAssignCash}
+              onClose={() => setCashierToAssignCash(null)}
+              onConfirm={(amount) => handleUpdateCashierInitialCash(cashierToAssignCash.id, amount)}
+            />
+          )}
+          {showPurchaseModal && (
+            <PurchaseInvoiceModal
+              inventory={inventory}
+              initialData={purchaseToEdit}
+              onClose={() => {
+                setShowPurchaseModal(false);
+                setPurchaseToEdit(null);
+              }}
+              onSave={handleSavePurchase}
+            />
+          )}
+          {showRecipeModal && (
+            <RecipeModal
+              inventory={inventory}
+              onClose={() => setShowRecipeModal(false)}
+              onSave={handleSaveRecipe}
+            />
+          )}
+          {showCloseCashModal && activeCashier && (
+            <CloseCashModal
+              cashier={activeCashier}
+              salesHistory={salesHistory.filter((s) => s.cashierId === activeCashier.id)}
+              onClose={() => setShowCloseCashModal(false)}
+            />
+          )}
+          {lastSaleTicket && (
+            <PrintConfirmationModal
+              sale={lastSaleTicket}
+              ticketFormat={ticketFormat}
+              onClose={() => setLastSaleTicket(null)}
+              onReprint={() => triggerThermalPrint(lastSaleTicket, ticketFormat)}
+            />
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ============================= LOGIN VIEW ================================
+    // =========================================================================
+    function LoginScreen({ cashiers, adminPassword, isLiveConnected, onLoginSuccess }) {
+      const [tab, setTab] = useState('CASHIER');
+      const [dniInput, setDniInput] = useState('');
+      const [pinInput, setPinInput] = useState('');
+      const [adminEmailInput, setAdminEmailInput] = useState('admin@experienceqr.com');
+      const [adminPassInput, setAdminPassInput] = useState('');
+      const [isLoadingAuth, setIsLoadingAuth] = useState(false);
+      const [errorMsg, setErrorMsg] = useState('');
+
+      const normalizeDni = (str) => str.replace(/[^0-9]/g, '');
+
+      const handleCashierLogin = (e) => {
+        e.preventDefault();
+        setErrorMsg('');
+        const cleanDni = normalizeDni(dniInput);
+        if (!cleanDni) {
+          setErrorMsg('Por favor ingrese su número de DNI');
+          return;
+        }
+
+        const found = cashiers.find((c) => normalizeDni(c.dni) === cleanDni);
+        if (!found) {
+          setErrorMsg('DNI no registrado como cajero del boliche.');
+          return;
+        }
+        if (!found.active) {
+          setErrorMsg('Este cajero se encuentra desactivado por administración.');
+          return;
+        }
+        if (pinInput.trim() !== (found.pin || '1234').trim()) {
+          setErrorMsg('PIN incorrecto para este cajero.');
+          return;
+        }
+
+        onLoginSuccess({ role: 'CASHIER', cashierId: found.id });
+      };
+
+      const handleAdminLogin = async (e) => {
+        e.preventDefault();
+        setErrorMsg('');
+        setIsLoadingAuth(true);
+
+        const emailTrimmed = adminEmailInput.trim();
+        const passTrimmed = adminPassInput.trim();
+
+        if (passTrimmed === adminPassword.trim()) {
+          setIsLoadingAuth(false);
+          onLoginSuccess({ role: 'ADMIN', provider: 'LOCAL_MASTER' });
+          return;
+        }
+
+        if (!emailTrimmed) {
+          setIsLoadingAuth(false);
+          setErrorMsg('Ingrese el correo electrónico de Firebase.');
+          return;
+        }
+
+        try {
+          try {
+            if (auth.currentUser && auth.currentUser.isAnonymous) await signOut(auth);
+          } catch (logoutErr) {}
+
+          const userCredential = await signInWithEmailAndPassword(auth, emailTrimmed, passTrimmed);
+          setIsLoadingAuth(false);
+          onLoginSuccess({
+            role: 'ADMIN',
+            email: userCredential.user.email,
+            uid: userCredential.user.uid,
+            provider: 'FIREBASE_SDK'
+          });
+        } catch (firebaseErr) {
+          setIsLoadingAuth(false);
+          const errCode = firebaseErr.message || '';
+          if (errCode.includes('PASSWORD_LOGIN_DISABLED')) {
+            setErrorMsg('PASSWORD_LOGIN_DISABLED: Habilite Correo/Contraseña en Firebase Console > Sign-in method, o ingrese con la clave maestra.');
+          } else if (errCode.includes('invalid-credential') || errCode.includes('wrong-password')) {
+            setErrorMsg('Contraseña incorrecta para el usuario de Firebase.');
+          } else {
+            setErrorMsg(`Error de Firebase Auth: ${errCode}`);
+          }
+        }
+      };
+
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+          <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-sm">
+            <div className="text-center mb-6">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 to-pink-500 flex items-center justify-center font-black text-2xl shadow-xl shadow-purple-600/30 mx-auto mb-3">
+                ⚡
+              </div>
+              <h1 className="text-2xl font-black tracking-tight text-white">TANGALAGUA</h1>
+              <p className="text-xs text-slate-400 mt-1">Control de Barras & Facturación Mayorista</p>
+              <div className="mt-2.5 flex items-center justify-center gap-1.5">
+                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold border ${isLiveConnected ? 'bg-emerald-950/80 border-emerald-700/60 text-emerald-300' : 'bg-amber-950/80 border-amber-700/60 text-amber-300'}`}>
+                  <Icons.Radio className={`w-3.5 h-3.5 ${isLiveConnected ? 'text-emerald-400 animate-pulse' : 'text-amber-400'}`} />
+                  <span>{isLiveConnected ? 'Firebase En Vivo' : 'Conectando con Firebase...'}</span>
+                </span>
+              </div>
+            </div>
+
+            <div className="flex bg-slate-950 p-1 rounded-2xl border border-slate-800 mb-6">
+              <button
+                type="button"
+                onClick={() => { setTab('CASHIER'); setErrorMsg(''); }}
+                className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 ${tab === 'CASHIER' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Icons.DollarSign className="w-4 h-4" /> Cajero (DNI + PIN)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setTab('ADMIN'); setErrorMsg(''); }}
+                className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 ${tab === 'ADMIN' ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Icons.ShieldCheck className="w-4 h-4" /> Administrativo
+              </button>
+            </div>
+
+            {errorMsg && (
+              <div className="mb-4 p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl text-rose-300 text-xs flex items-start gap-2">
+                <Icons.AlertTriangle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                <div className="leading-snug">{errorMsg}</div>
+              </div>
+            )}
+
+            {tab === 'CASHIER' ? (
+              <form onSubmit={handleCashierLogin} className="space-y-4 text-xs">
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1.5">DNI del Cajero</label>
+                  <input
+                    type="text"
+                    required
+                    value={dniInput}
+                    onChange={(e) => setDniInput(e.target.value)}
+                    placeholder="Ingrese DNI"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-white text-sm outline-none focus:border-emerald-500 font-mono"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Ingrese con el DNI registrado por administración.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1.5">PIN de Barra</label>
+                  <input
+                    type="password"
+                    required
+                    value={pinInput}
+                    onChange={(e) => setPinInput(e.target.value)}
+                    placeholder="••••"
+                    maxLength={10}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-white text-sm outline-none focus:border-emerald-500 font-mono tracking-widest"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition-all mt-2"
+                >
+                  <Icons.LogIn className="w-4 h-4" /> Ingresar a Barra TPV
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleAdminLogin} className="space-y-4 text-xs">
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1.5">Correo (Firebase Auth)</label>
+                  <input
+                    type="email"
+                    value={adminEmailInput}
+                    onChange={(e) => setAdminEmailInput(e.target.value)}
+                    placeholder="admin@experienceqr.com"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-white text-sm outline-none focus:border-purple-500 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1.5">Contraseña</label>
+                  <input
+                    type="password"
+                    required
+                    value={adminPassInput}
+                    onChange={(e) => setAdminPassInput(e.target.value)}
+                    placeholder="Tu clave de Firebase o Clave Administrativa"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-white text-sm outline-none focus:border-purple-500 font-mono"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isLoadingAuth}
+                  className="w-full py-3.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-black text-xs shadow-lg shadow-purple-600/30 flex items-center justify-center gap-2 transition-all mt-2"
+                >
+                  {isLoadingAuth ? (
+                    <>
+                      <Icons.RefreshCw className="w-4 h-4 animate-spin" /> Conectando...
+                    </>
+                  ) : (
+                    <>
+                      <Icons.ShieldCheck className="w-4 h-4" /> Iniciar Sesión con Firebase
+                    </>
+                  )}
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ======================= MODAL CONFIRMAR IMPRESIÓN =======================
+    // =========================================================================
+    function PrintConfirmationModal({ sale, ticketFormat, onClose, onReprint }) {
+      return (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-4">
+            <div className="text-center">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto mb-2 border border-emerald-500/30">
+                <Icons.CheckCircle2 className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-black text-white">Venta Registrada con Éxito</h3>
+              <p className="text-xs text-slate-400">Orden #{sale.ticketNumber} &bull; ${sale.total.toLocaleString('es-AR')}</p>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-2">
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Ticket Térmico:</span>
+                <span className="font-mono text-white font-bold">{ticketFormat}</span>
+              </div>
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Forma de Pago:</span>
+                <span className="font-mono text-purple-300 font-bold">{sale.paymentMethod}</span>
+              </div>
+              <div className="text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 p-2 rounded-lg text-center font-semibold">
+                ✓ Comprobante enviado a la ticketera
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onReprint}
+                className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-1.5"
+              >
+                <Icons.Printer className="w-3.5 h-3.5" /> Reimprimir
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shadow-lg shadow-purple-600/30"
+              >
+                Aceptar
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ========================== COMPONENTES AUXILIARES =======================
+    // =========================================================================
+    function SidebarBtn({ active, onClick, icon, label, badge, alertCount }) {
+      return (
+        <button
+          onClick={onClick}
+          className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-bold text-xs transition-all ${
+            active ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            {icon}
+            <span>{label}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {alertCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-md bg-rose-500/20 text-rose-400 border border-rose-500/40 text-[10px] font-black animate-pulse">
+                {alertCount}
+              </span>
+            )}
+            {badge !== undefined && (
+              <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${active ? 'bg-purple-700 text-purple-100' : 'bg-slate-800 text-slate-400'}`}>
+                {badge}
+              </span>
+            )}
+          </div>
+        </button>
+      );
+    }
+
+    // =========================================================================
+    // ============================= DASHBOARD VIEW ============================
+    // =========================================================================
+    function DashboardView({ inventory, salesHistory, cashiers, recipes, onNavigate }) {
+      const totalSalesAmount = useMemo(() => salesHistory.reduce((acc, s) => acc + s.total, 0), [salesHistory]);
+      const totalCcDespachados = useMemo(() => {
+        let total = 0;
+        salesHistory.forEach((s) => {
+          s.items.forEach((item) => {
+            const recipe = recipes.find((r) => r.name === item.name);
+            if (recipe) {
+              const recipeCc = recipe.ingredients.reduce((acc, ing) => acc + ing.cc, 0);
+              total += recipeCc * item.qty;
+            }
+          });
+        });
+        return total;
+      }, [salesHistory, recipes]);
+
+      const activeCashiersCount = cashiers.filter((c) => c.active).length;
+
+      return (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-2xl font-black text-white">Panel de Control Operativo</h2>
+            <p className="text-xs text-slate-400">Resumen en vivo de facturación, barras y stock</p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+              <div className="text-slate-400 text-xs font-semibold mb-1">Recaudación Total</div>
+              <div className="text-2xl font-black text-emerald-400 font-mono">${totalSalesAmount.toLocaleString('es-AR')}</div>
+              <div className="text-[10px] text-slate-500 mt-1">{salesHistory.length} órdenes procesadas</div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+              <div className="text-slate-400 text-xs font-semibold mb-1">Volumen Despachado (cc)</div>
+              <div className="text-2xl font-black text-purple-400 font-mono">
+                {(totalCcDespachados / 1000).toFixed(1)} <span className="text-sm font-normal text-slate-400">Litros</span>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">{totalCcDespachados.toLocaleString('es-AR')} cc medidos</div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+              <div className="text-slate-400 text-xs font-semibold mb-1">Barras / Cajeros Activos</div>
+              <div className="text-2xl font-black text-white font-mono">{activeCashiersCount} <span className="text-sm font-normal text-slate-400">/ {cashiers.length}</span></div>
+              <div className="text-[10px] text-slate-500 mt-1">Terminales en servicio</div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+              <div className="text-slate-400 text-xs font-semibold mb-1">Variedades en Carta</div>
+              <div className="text-2xl font-black text-amber-400 font-mono">{recipes.length}</div>
+              <div className="text-[10px] text-slate-500 mt-1">Escandallos activos</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <button
+              onClick={() => onNavigate('ANALYTICS')}
+              className="p-5 rounded-2xl bg-gradient-to-br from-purple-900/40 to-slate-900 border border-purple-800/40 hover:border-purple-600 text-left transition-all"
+            >
+              <div className="w-10 h-10 rounded-xl bg-purple-600/20 text-purple-400 flex items-center justify-center mb-3">
+                <Icons.TrendingUp className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold text-white text-sm">Estadísticas & Gráficos</h3>
+              <p className="text-xs text-slate-400 mt-1">Histogramas de cajas, ranking de tragos y curvas de costo vs ventas.</p>
+            </button>
+
+            <button
+              onClick={() => onNavigate('CONSIGNMENT')}
+              className="p-5 rounded-2xl bg-gradient-to-br from-indigo-900/40 to-slate-900 border border-indigo-800/40 hover:border-indigo-600 text-left transition-all"
+            >
+              <div className="w-10 h-10 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center mb-3">
+                <Icons.Handshake className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold text-white text-sm">Consignación & Eventos</h3>
+              <p className="text-xs text-slate-400 mt-1">Liquidá mercadería consumida por evento y controlá el stock remanente.</p>
+            </button>
+
+            <button
+              onClick={() => onNavigate('INVENTORY')}
+              className="p-5 rounded-2xl bg-gradient-to-br from-emerald-900/40 to-slate-900 border border-emerald-800/40 hover:border-emerald-600 text-left transition-all"
+            >
+              <div className="w-10 h-10 rounded-xl bg-emerald-600/20 text-emerald-400 flex items-center justify-center mb-3">
+                <Icons.Package className="w-5 h-5" />
+              </div>
+              <h3 className="font-bold text-white text-sm">Stock en Mililitros (cc)</h3>
+              <p className="text-xs text-slate-400 mt-1">Monitoreá botellas abiertas y niveles mínimos de insumos en barra.</p>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ============================= ANALYTICS VIEW ============================
+    // =========================================================================
+    function AnalyticsView({ salesHistory, purchases, cashiers, recipes }) {
+      const drinkRanking = useMemo(() => {
+        const counts = {};
+        salesHistory.forEach((sale) => {
+          sale.items.forEach((item) => {
+            counts[item.name] = (counts[item.name] || 0) + item.qty;
+          });
+        });
+        const list = Object.entries(counts).map(([name, count]) => {
+          const rec = recipes.find((r) => r.name === name);
+          const price = rec ? rec.price : 6000;
+          return { name, count, revenue: count * price, category: rec?.category || 'Trago' };
+        });
+        list.sort((a, b) => b.count - a.count);
+        return list;
+      }, [salesHistory, recipes]);
+
+      const maxDrinkCount = drinkRanking[0]?.count || 1;
+      const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+      const cashByMonth = useMemo(() => {
+        return months.map((m, idx) => {
+          const total = Math.round(540000 + (Math.sin(idx + 1) + 1) * 320000);
+          return { month: m, total };
+        });
+      }, []);
+
+      const maxMonthTotal = Math.max(...cashByMonth.map((c) => c.total), 800000);
+
+      return (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-2xl font-black text-white">Estadísticas & Gráficos</h2>
+            <p className="text-xs text-slate-400">Métricas analíticas de despacho, cajas mensuales y compras vs ventas</p>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+            <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+              <Icons.TrendingUp className="w-4 h-4 text-purple-400" /> Bebidas Más Vendidas
+            </h3>
+            <div className="space-y-3">
+              {drinkRanking.map((item, idx) => {
+                const pct = Math.round((item.count / maxDrinkCount) * 100);
+                return (
+                  <div key={idx} className="space-y-1">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-bold text-slate-200">
+                        <span className="text-purple-400 font-mono mr-2">#{idx + 1}</span>
+                        {item.name}
+                      </span>
+                      <div className="flex items-center gap-3 font-mono">
+                        <span className="text-purple-300 font-bold">{item.count} vasos</span>
+                        <span className="text-emerald-400 font-bold">${item.revenue.toLocaleString('es-AR')}</span>
+                      </div>
+                    </div>
+                    <div className="w-full h-3 bg-slate-950 rounded-full overflow-hidden p-0.5 border border-slate-800">
+                      <div className="h-full bg-gradient-to-r from-purple-600 to-pink-500 rounded-full" style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+            <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+              <Icons.BarChart3 className="w-4 h-4 text-emerald-400" /> Histograma de Recaudación Mensual
+            </h3>
+            <div className="h-48 flex items-end justify-between gap-1 pt-6 px-2 border-b border-slate-800">
+              {cashByMonth.map((col, idx) => {
+                const hPct = Math.round((col.total / maxMonthTotal) * 100);
+                return (
+                  <div key={idx} className="flex-1 flex flex-col items-center h-full justify-end group">
+                    <div className="w-full max-w-[24px] bg-gradient-to-t from-emerald-600 to-teal-400 rounded-t-md" style={{ height: `${hPct}%` }} />
+                    <span className="text-[9px] text-slate-400 mt-2 font-mono">{col.month}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ========================== CONSIGNMENT VIEW =============================
+    // =========================================================================
+    function ConsignmentView({ purchases, inventory, recipes, salesHistory, events, onRegisterPayment }) {
+      const [selectedEventId, setSelectedEventId] = useState(events[0]?.id || '');
+      const [paymentModalData, setPaymentModalData] = useState(null);
+      const [manualConsumed, setManualConsumed] = useState({});
+
+      const consignmentOnlyPurchases = useMemo(
+        () => purchases.filter((p) => p.isConsignment === true),
+        [purchases]
+      );
+
+      return (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div>
+              <h2 className="text-2xl font-black text-white">Consignación & Liquidación por Evento</h2>
+              <p className="text-xs text-slate-400">Stock real según factura, cálculo de consumido a pagar y stock sobrante</p>
+            </div>
+            <select
+              value={selectedEventId}
+              onChange={(e) => setSelectedEventId(e.target.value)}
+              className="bg-slate-900 border border-slate-800 text-white text-xs rounded-xl px-3 py-2 outline-none font-bold"
+            >
+              {events.map((evt) => (
+                <option key={evt.id} value={evt.id}>{evt.name} ({evt.date})</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-4">
+            {consignmentOnlyPurchases.map((purchase) => {
+              const paid = purchase.paidAmount || 0;
+              const pendingTotal = purchase.totalAmount - paid;
+
+              return (
+                <div key={purchase.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
+                    <div>
+                      <span className="font-mono font-bold text-white text-sm">{purchase.invoiceNumber}</span>
+                      <p className="text-xs text-slate-400 mt-0.5">{purchase.supplier} &bull; Emisión: {purchase.date}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <div className="text-xs text-slate-400">Total Factura</div>
+                        <div className="text-base font-black text-white font-mono">${purchase.totalAmount.toLocaleString('es-AR')}</div>
+                      </div>
+                      <button
+                        onClick={() => setPaymentModalData(purchase)}
+                        className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shadow-lg shadow-purple-600/30 flex items-center gap-1.5"
+                      >
+                        <Icons.DollarSign className="w-3.5 h-3.5" /> Registrar Pago
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="text-slate-400 border-b border-slate-800 font-semibold">
+                          <th className="pb-2">Artículo</th>
+                          <th className="pb-2">Stock Real (Factura)</th>
+                          <th className="pb-2 text-center">Consumido (A Pagar)</th>
+                          <th className="pb-2 text-center">Stock Sobrante</th>
+                          <th className="pb-2 text-right">Costo a Liquidar</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono">
+                        {purchase.items.map((item, idx) => {
+                          const key = `${purchase.id}-${item.inventoryId}`;
+                          const consumedBottles = manualConsumed[key] !== undefined ? manualConsumed[key] : Math.min(item.bottles, 4);
+                          const remainingBottles = Math.max(0, item.bottles - consumedBottles);
+                          const remainingCc = remainingBottles * item.bottleSizeMl;
+                          const costToPay = consumedBottles * item.costPerBottle;
+
+                          return (
+                            <tr key={idx} className="hover:bg-slate-850/40">
+                              <td className="py-2.5 font-sans font-bold text-white">{item.name}</td>
+                              <td className="py-2.5 text-slate-300">{item.bottles} bot. ({item.addedMl.toLocaleString('es-AR')}cc)</td>
+                              <td className="py-2.5 text-center">
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  min="0"
+                                  max={item.bottles}
+                                  value={consumedBottles}
+                                  onChange={(e) => setManualConsumed({ ...manualConsumed, [key]: Math.max(0, parseFloat(e.target.value) || 0) })}
+                                  className="w-20 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-center text-amber-300 font-bold"
+                                />
+                              </td>
+                              <td className="py-2.5 text-center text-emerald-400 font-bold">{remainingBottles} bot. ({remainingCc.toLocaleString('es-AR')}cc)</td>
+                              <td className="py-2.5 text-right font-black text-white">${costToPay.toLocaleString('es-AR')}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2 text-xs border-t border-slate-800">
+                    <span className="text-slate-400">Pagado: <strong className="text-emerald-400">${paid.toLocaleString('es-AR')}</strong></span>
+                    <span className="text-slate-300 font-bold">Saldo Pendiente: <strong className="font-mono text-purple-400">${pendingTotal.toLocaleString('es-AR')}</strong></span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {paymentModalData && (
+            <ConsignmentPaymentModal
+              purchase={paymentModalData}
+              onClose={() => setPaymentModalData(null)}
+              onConfirm={(amount) => {
+                onRegisterPayment(paymentModalData.id, amount);
+                setPaymentModalData(null);
+              }}
+            />
+          )}
+        </div>
+      );
+    }
+
+    function ConsignmentPaymentModal({ purchase, onClose, onConfirm }) {
+      const [amount, setAmount] = useState('');
+      const maxPending = purchase.totalAmount - (purchase.paidAmount || 0);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        const val = parseFloat(amount);
+        if (!val || val <= 0) return;
+        onConfirm(Math.min(val, maxPending));
+      };
+
+      return (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl">
+            <h3 className="text-base font-black text-white mb-1">Registrar Pago a Proveedor</h3>
+            <p className="text-xs text-slate-400 mb-4">{purchase.supplier} &bull; {purchase.invoiceNumber}</p>
+            <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Monto a Abonar ($)</label>
+                <input
+                  type="number"
+                  required
+                  autoFocus
+                  max={maxPending}
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder={`Máx: $${maxPending.toLocaleString('es-AR')}`}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white font-mono text-sm outline-none focus:border-purple-500"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold">Cancelar</button>
+                <button type="submit" className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black shadow-lg">Confirmar</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ==================== CONSIGNMENT STOCK VIEW =============================
+    // =========================================================================
+    function ConsignmentStockView({ purchases, inventory, recipes, salesHistory, events }) {
+      const consignmentPurchases = useMemo(() => purchases.filter((p) => p.isConsignment === true), [purchases]);
+
+      const aggregatedStock = useMemo(() => {
+        const map = {};
+        consignmentPurchases.forEach((p) => {
+          p.items.forEach((item) => {
+            if (!map[item.name]) {
+              map[item.name] = {
+                name: item.name,
+                bottleSizeMl: item.bottleSizeMl,
+                costPerBottle: item.costPerBottle,
+                totalBottlesBilled: 0,
+                totalBottlesConsumed: 0
+              };
+            }
+            map[item.name].totalBottlesBilled += item.bottles;
+            map[item.name].totalBottlesConsumed += Math.round(item.bottles * 0.45);
+          });
+        });
+
+        return Object.values(map).map((entry) => {
+          const remainingBottles = Math.max(0, entry.totalBottlesBilled - entry.totalBottlesConsumed);
+          const remainingMl = remainingBottles * entry.bottleSizeMl;
+          const valuation = remainingBottles * entry.costPerBottle;
+          return { ...entry, remainingBottles, remainingMl, valuation };
+        });
+      }, [consignmentPurchases]);
+
+      return (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-2xl font-black text-white">Stock según Consignación</h2>
+            <p className="text-xs text-slate-400">Control consolidado de stock sobrante remanente y valorización</p>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+            <h3 className="text-sm font-bold text-white mb-3">Balance de Sobrantes por Artículo</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-slate-400 border-b border-slate-800 font-semibold">
+                    <th className="pb-2">Artículo</th>
+                    <th className="pb-2 text-center">Facturado</th>
+                    <th className="pb-2 text-center">Consumido</th>
+                    <th className="pb-2 text-center">Stock Sobrante</th>
+                    <th className="pb-2 text-right">Volumen Sobrante (cc)</th>
+                    <th className="pb-2 text-right">Valorización</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60 font-mono">
+                  {aggregatedStock.map((item, idx) => (
+                    <tr key={idx} className="hover:bg-slate-850/40">
+                      <td className="py-2.5 font-sans font-bold text-white">{item.name}</td>
+                      <td className="py-2.5 text-center text-slate-400">{item.totalBottlesBilled} bot.</td>
+                      <td className="py-2.5 text-center text-amber-400">{item.totalBottlesConsumed} bot.</td>
+                      <td className="py-2.5 text-center text-emerald-400 font-bold">{item.remainingBottles} bot.</td>
+                      <td className="py-2.5 text-right text-slate-300">{item.remainingMl.toLocaleString('es-AR')} cc</td>
+                      <td className="py-2.5 text-right font-black text-white">${item.valuation.toLocaleString('es-AR')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ============================= CASHIERS VIEW =============================
+    // =========================================================================
+    function CashiersView({ cashiers, onToggleStatus, onDeleteCashier, onOpenCreateModal, onOpenAssignCashModal }) {
+      return (
+        <div className="space-y-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h2 className="text-2xl font-black text-white">Gestión de Cajeros & Barras</h2>
+              <p className="text-xs text-slate-400">Asignación de turnos, fondos fijos de caja y credenciales DNI/PIN</p>
+            </div>
+            <button
+              onClick={onOpenCreateModal}
+              className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shadow-lg shadow-purple-600/30 flex items-center gap-2"
+            >
+              <Icons.Plus className="w-4 h-4" /> Alta de Cajero
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {cashiers.map((cashier) => (
+              <div key={cashier.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+                <div>
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <h3 className="font-bold text-white text-base">{cashier.name}</h3>
+                      <p className="text-xs text-slate-400">{cashier.station}</p>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${cashier.active ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}`}>
+                      {cashier.active ? 'HABILITADO' : 'INACTIVO'}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5 text-xs text-slate-400 pt-2 border-t border-slate-800/80">
+                    <div className="flex justify-between"><span>DNI:</span><span className="font-mono text-slate-200">{cashier.dni}</span></div>
+                    <div className="flex justify-between"><span>PIN:</span><span className="font-mono text-purple-400 font-bold">{cashier.pin}</span></div>
+                    <div className="flex justify-between"><span>Turno:</span><span className="text-slate-300">{cashier.shift}</span></div>
+                    <div className="flex justify-between items-center pt-1">
+                      <span>Fondo Inicial:</span>
+                      <div className="flex items-center gap-1.5 font-mono">
+                        <span className="font-bold text-emerald-400">${cashier.initialCash.toLocaleString('es-AR')}</span>
+                        <button onClick={() => onOpenAssignCashModal(cashier)} className="px-2 py-0.5 text-[10px] bg-slate-800 hover:bg-slate-700 text-purple-300 rounded font-bold">Asignar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    onClick={() => onToggleStatus(cashier.id)}
+                    className={`flex-1 py-2 rounded-xl font-bold text-xs transition-all ${cashier.active ? 'bg-slate-800 hover:bg-slate-700 text-slate-300' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}
+                  >
+                    {cashier.active ? 'Desactivar' : 'Activar'}
+                  </button>
+                  <button
+                    onClick={() => onDeleteCashier(cashier.id)}
+                    className="p-2 rounded-xl bg-slate-800 hover:bg-rose-900/40 text-slate-400 hover:text-rose-400"
+                    title="Eliminar Cajero"
+                  >
+                    <Icons.Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function AssignCashModal({ cashier, onClose, onConfirm }) {
+      const [amount, setAmount] = useState(cashier.initialCash || 0);
+      const presets = [20000, 30000, 50000, 80000, 100000];
+
+      return (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-4">
+            <h3 className="text-base font-black text-white">Asignar Fondo de Caja</h3>
+            <p className="text-xs text-slate-400">{cashier.name} &bull; {cashier.station}</p>
+            <div className="space-y-3 text-xs">
+              <input
+                type="number"
+                value={amount}
+                onChange={(e) => setAmount(parseFloat(e.target.value) || 0)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white font-mono text-base font-bold outline-none focus:border-purple-500"
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {presets.map((p) => (
+                  <button key={p} type="button" onClick={() => setAmount(p)} className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-[11px] font-mono font-bold">
+                    ${(p / 1000).toFixed(0)}k
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs">Cancelar</button>
+              <button type="button" onClick={() => onConfirm(amount)} className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-lg">Guardar Fondo</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function AddCashierModal({ onClose, onAdd }) {
+      const [name, setName] = useState('');
+      const [dni, setDni] = useState('');
+      const [pin, setPin] = useState('');
+      const [station, setStation] = useState('Barra Principal');
+      const [shift, setShift] = useState('Noche (23:00 a 06:30)');
+      const [initialCash, setInitialCash] = useState(50000);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!name || !dni || !pin) return;
+        onAdd({
+          id: `csh-${Date.now().toString().slice(-4)}`,
+          name,
+          dni,
+          pin,
+          station,
+          shift,
+          initialCash: parseFloat(initialCash) || 0,
+          active: true,
+          totalSales: 0
+        });
+      };
+
+      return (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+            <h3 className="text-base font-black text-white mb-4">Alta de Cajero / Empleado de Barra</h3>
+            <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Nombre Completo</label>
+                <input type="text" required value={name} onChange={(e) => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-purple-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">DNI (Acceso)</label>
+                  <input type="text" required value={dni} onChange={(e) => setDni(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono outline-none focus:border-purple-500" />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">PIN</label>
+                  <input type="password" required maxLength={6} value={pin} onChange={(e) => setPin(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono tracking-widest outline-none focus:border-purple-500" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Barra Asignada</label>
+                <input type="text" required value={station} onChange={(e) => setStation(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-purple-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Turno</label>
+                  <input type="text" required value={shift} onChange={(e) => setShift(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-purple-500" />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Fondo Inicial ($)</label>
+                  <input type="number" required value={initialCash} onChange={(e) => setInitialCash(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono outline-none focus:border-purple-500" />
+                </div>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold">Cancelar</button>
+                <button type="submit" className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black shadow-lg">Crear Cajero</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ============================= PURCHASES VIEW ============================
+    // =========================================================================
+    function PurchasesView({ purchases, inventory, onOpenPurchaseModal, onEditPurchase, onDeletePurchase }) {
+      return (
+        <div className="space-y-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h2 className="text-2xl font-black text-white">Facturación & Compras Mayoristas</h2>
+              <p className="text-xs text-slate-400">Ingreso de stock, remitos y compras directas o en consignación</p>
+            </div>
+            <button onClick={onOpenPurchaseModal} className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shadow-lg flex items-center gap-2">
+              <Icons.Plus className="w-4 h-4" /> Cargar Factura
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {purchases.map((purchase) => (
+              <div key={purchase.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-white text-base">{purchase.invoiceNumber}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${purchase.isConsignment ? 'bg-purple-950 text-purple-300 border border-purple-800' : 'bg-emerald-950 text-emerald-300 border border-emerald-800'}`}>
+                        {purchase.isConsignment ? 'CONSIGNACIÓN' : 'COMPRA DIRECTA'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">Proveedor: <strong className="text-slate-200">{purchase.supplier}</strong> &bull; {purchase.date}</p>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="text-right">
+                      <div className="text-xs text-slate-400">Importe Total</div>
+                      <div className="text-lg font-black text-emerald-400 font-mono">${purchase.totalAmount.toLocaleString('es-AR')}</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 border-l border-slate-800 pl-3">
+                      <button onClick={() => onEditPurchase(purchase)} className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300" title="Editar"><Icons.Edit3 className="w-4 h-4" /></button>
+                      <button onClick={() => onDeletePurchase(purchase.id)} className="p-2 rounded-xl bg-slate-800 hover:bg-rose-900/40 text-slate-400 hover:text-rose-400" title="Eliminar"><Icons.Trash2 className="w-4 h-4" /></button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-800/80 pt-2 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                  {purchase.items.map((item, idx) => (
+                    <div key={idx} className="p-2 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                      <div className="font-bold text-white">{item.name}</div>
+                      <div className="text-[11px] text-slate-400 font-mono flex justify-between mt-1">
+                        <span>{item.bottles} bot. ({item.addedMl.toLocaleString('es-AR')}cc)</span>
+                        <span className="text-purple-300 font-bold">${item.cost.toLocaleString('es-AR')}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function PurchaseInvoiceModal({ inventory, initialData, onClose, onSave }) {
+      const [invoiceNumber, setInvoiceNumber] = useState(initialData?.invoiceNumber || '');
+      const [supplier, setSupplier] = useState(initialData?.supplier || '');
+      const [date, setDate] = useState(initialData?.date || new Date().toISOString().split('T')[0]);
+      const [isConsignment, setIsConsignment] = useState(initialData?.isConsignment || false);
+      const [selectedInvId, setSelectedInvId] = useState(inventory[0]?.id || '');
+      const [bottles, setBottles] = useState(6);
+      const [cost, setCost] = useState(50000);
+      const [items, setItems] = useState(initialData?.items || []);
+
+      const handleAddItem = () => {
+        const inv = inventory.find((i) => i.id === selectedInvId);
+        if (!inv) return;
+        const bCount = parseInt(bottles) || 1;
+        const cTotal = parseFloat(cost) || 0;
+        setItems([...items, {
+          inventoryId: inv.id,
+          name: inv.name,
+          bottles: bCount,
+          bottleSizeMl: inv.bottleSizeMl,
+          addedMl: bCount * inv.bottleSizeMl,
+          cost: cTotal,
+          costPerBottle: Math.round(cTotal / bCount)
+        }]);
+      };
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (items.length === 0 || !invoiceNumber || !supplier) return;
+        const totalAmount = items.reduce((acc, i) => acc + i.cost, 0);
+        onSave({
+          id: initialData?.id || `fac-${Date.now().toString().slice(-4)}`,
+          date,
+          invoiceNumber,
+          supplier,
+          isConsignment,
+          paidAmount: initialData ? initialData.paidAmount : isConsignment ? 0 : totalAmount,
+          totalAmount,
+          items
+        });
+      };
+
+      return (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-base font-black text-white mb-4">{initialData ? 'Editar Factura' : 'Registrar Factura Mayorista'}</h3>
+            <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <input type="text" required placeholder="N° Factura" value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono" />
+                <input type="date" required value={date} onChange={(e) => setDate(e.target.value)} className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white" />
+              </div>
+              <input type="text" required placeholder="Proveedor Mayorista" value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white" />
+
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setIsConsignment(true)} className={`py-2 rounded-lg font-bold text-xs ${isConsignment ? 'bg-purple-600 text-white' : 'bg-slate-900 text-slate-400'}`}>En Consignación</button>
+                <button type="button" onClick={() => setIsConsignment(false)} className={`py-2 rounded-lg font-bold text-xs ${!isConsignment ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-400'}`}>Compra Directa</button>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                <span className="font-bold text-white">Agregar Bebidas:</span>
+                <div className="grid grid-cols-3 gap-2">
+                  <select value={selectedInvId} onChange={(e) => setSelectedInvId(e.target.value)} className="bg-slate-900 border border-slate-800 text-white rounded-xl px-2 py-2 text-xs">
+                    {inventory.map((inv) => <option key={inv.id} value={inv.id}>{inv.name}</option>)}
+                  </select>
+                  <input type="number" min="1" value={bottles} onChange={(e) => setBottles(e.target.value)} placeholder="Botellas" className="bg-slate-900 border border-slate-800 text-white rounded-xl px-2 py-2 font-mono" />
+                  <input type="number" min="0" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="Costo Total" className="bg-slate-900 border border-slate-800 text-white rounded-xl px-2 py-2 font-mono" />
+                </div>
+                <button type="button" onClick={handleAddItem} className="w-full py-2 rounded-xl bg-slate-850 text-purple-300 font-bold border border-purple-800/40">+ Agregar Ítem</button>
+              </div>
+
+              {items.map((it, idx) => (
+                <div key={idx} className="flex justify-between items-center p-2 rounded-lg bg-slate-950 border border-slate-800">
+                  <span className="text-white font-bold">{it.name} ({it.bottles} bot.)</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400 font-mono font-bold">${it.cost.toLocaleString('es-AR')}</span>
+                    <button type="button" onClick={() => setItems(items.filter((_, i) => i !== idx))} className="text-slate-500 hover:text-rose-400"><Icons.Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
+                </div>
+              ))}
+
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold">Cancelar</button>
+                <button type="submit" disabled={items.length === 0} className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-black shadow-lg">Guardar Factura</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ============================= RECIPES VIEW ==============================
+    // =========================================================================
+    function RecipesView({ recipes, inventory, onOpenRecipeModal }) {
+      return (
+        <div className="space-y-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h2 className="text-2xl font-black text-white">Escandallos / Recetas de Barra</h2>
+              <p className="text-xs text-slate-400">Definición de tragos y descuento milimétrico en centímetros cúbicos (cc)</p>
+            </div>
+            <button onClick={onOpenRecipeModal} className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shadow-lg flex items-center gap-2">
+              <Icons.Plus className="w-4 h-4" /> Nuevo Trago
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {recipes.map((recipe) => (
+              <div key={recipe.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+                <div>
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <h3 className="font-bold text-white text-base">{recipe.name}</h3>
+                      <span className="text-[10px] bg-slate-800 text-purple-300 px-2 py-0.5 rounded-full font-bold">{recipe.category}</span>
+                    </div>
+                    <div className="font-mono font-black text-emerald-400 text-base">${recipe.price.toLocaleString('es-AR')}</div>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-3">{recipe.description}</p>
+                  <div className="space-y-1.5 pt-2 border-t border-slate-800 text-xs">
+                    <span className="font-bold text-slate-300 text-[11px]">Descuento por Vaso:</span>
+                    {recipe.ingredients.map((ing, idx) => (
+                      <div key={idx} className="flex justify-between text-slate-400 font-mono">
+                        <span>{ing.name}</span>
+                        <span className="text-purple-300 font-bold">{ing.cc} cc</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function RecipeModal({ inventory, onClose, onSave }) {
+      const [name, setName] = useState('');
+      const [category, setCategory] = useState('Tragos 1L');
+      const [price, setPrice] = useState(7000);
+      const [ingredients, setIngredients] = useState([
+        { inventoryId: inventory[0]?.id || '', name: inventory[0]?.name || '', cc: 150 }
+      ]);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!name || ingredients.length === 0) return;
+        onSave({
+          id: `rec-${Date.now().toString().slice(-4)}`,
+          name,
+          category,
+          price: parseFloat(price) || 0,
+          description: `Servido en vaso estándar`,
+          ingredients: ingredients.map((i) => ({ ...i, cc: parseFloat(i.cc) || 0 }))
+        });
+      };
+
+      return (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+            <h3 className="text-base font-black text-white mb-4">Crear Escandallo / Trago</h3>
+            <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
+              <input type="text" required placeholder="Nombre del Trago" value={name} onChange={(e) => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-purple-500" />
+              <div className="grid grid-cols-2 gap-3">
+                <input type="text" required placeholder="Categoría" value={category} onChange={(e) => setCategory(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white" />
+                <input type="number" required placeholder="Precio ($)" value={price} onChange={(e) => setPrice(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono" />
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                <span className="font-bold text-white">Ingredientes & Descuento en CC:</span>
+                {ingredients.map((ing, idx) => (
+                  <div key={idx} className="flex gap-2">
+                    <select
+                      value={ing.inventoryId}
+                      onChange={(e) => {
+                        const it = inventory.find((x) => x.id === e.target.value);
+                        setIngredients(ingredients.map((item, i) => i === idx ? { ...item, inventoryId: e.target.value, name: it?.name || '' } : item));
+                      }}
+                      className="flex-1 bg-slate-900 border border-slate-800 text-white rounded-xl px-2 py-1 text-xs"
+                    >
+                      {inventory.map((inv) => <option key={inv.id} value={inv.id}>{inv.name}</option>)}
+                    </select>
+                    <input
+                      type="number"
+                      value={ing.cc}
+                      onChange={(e) => setIngredients(ingredients.map((item, i) => i === idx ? { ...item, cc: e.target.value } : item))}
+                      className="w-20 bg-slate-900 border border-slate-800 text-white text-right rounded-xl px-2 py-1 font-mono text-purple-300 font-bold"
+                    />
+                    <span className="text-slate-500 self-center">cc</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold">Cancelar</button>
+                <button type="submit" className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black shadow-lg">Guardar Receta</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ============================= INVENTORY VIEW ============================
+    // =========================================================================
+    function InventoryView({ inventory, salesHistory, recipes, purchases, criticalItems, onOpenRestockModal, onUpdateStock }) {
+      const [filterCategory, setFilterCategory] = useState('ALL');
+      const [searchTerm, setSearchTerm] = useState('');
+      const [adjustItem, setAdjustItem] = useState(null);
+      const [adjustMl, setAdjustMl] = useState('');
+
+      // 1. Calcular el consumo real en barra de cada insumo (en cc) según recetas y ventas
+      const consumedByItem = useMemo(() => {
+        const map = {};
+        salesHistory.forEach((sale) => {
+          sale.items.forEach((saleItem) => {
+            const recipe = recipes.find((r) => r.name === saleItem.name);
+            if (recipe) {
+              recipe.ingredients.forEach((ing) => {
+                map[ing.inventoryId] = (map[ing.inventoryId] || 0) + (ing.cc * saleItem.qty);
+              });
+            }
+          });
+        });
+        return map;
+      }, [salesHistory, recipes]);
+
+      // 2. Consolidar productos directamente desde FACTURACIÓN Y COMPRAS
+      const purchasedProducts = useMemo(() => {
+        const map = {};
+
+        purchases.forEach((p) => {
+          p.items.forEach((it) => {
+            const key = it.inventoryId || it.name;
+            if (!map[key]) {
+              // Buscar metadatos existentes en inventory o asignar defaults
+              const meta = inventory.find((inv) => inv.id === it.inventoryId || inv.name.toLowerCase() === it.name.toLowerCase());
+              map[key] = {
+                id: it.inventoryId || key,
+                name: it.name,
+                category: meta?.category || 'Bebidas',
+                bottleSizeMl: it.bottleSizeMl || meta?.bottleSizeMl || 750,
+                costPerBottle: it.costPerBottle || (it.bottles > 0 ? Math.round(it.cost / it.bottles) : meta?.costPerBottle || 0),
+                minAlertMl: meta?.minAlertMl || (it.bottleSizeMl ? it.bottleSizeMl * 3 : 2500),
+                totalPurchasedMl: 0,
+                totalBottlesPurchased: 0,
+                invoicesCount: 0
+              };
+            }
+            map[key].totalPurchasedMl += it.addedMl || (it.bottles * (it.bottleSizeMl || 750));
+            map[key].totalBottlesPurchased += it.bottles;
+            map[key].invoicesCount += 1;
+          });
+        });
+
+        // Si hay insumos en catálogo que aún no tienen factura cargada, incorporarlos como referencia
+        inventory.forEach((inv) => {
+          if (!map[inv.id]) {
+            map[inv.id] = {
+              id: inv.id,
+              name: inv.name,
+              category: inv.category,
+              bottleSizeMl: inv.bottleSizeMl,
+              costPerBottle: inv.costPerBottle,
+              minAlertMl: inv.minAlertMl,
+              totalPurchasedMl: inv.currentStockMl || 0,
+              totalBottlesPurchased: Math.round((inv.currentStockMl || 0) / inv.bottleSizeMl),
+              invoicesCount: 0
+            };
+          }
+        });
+
+        // Calcular Stock Disponible: Comprado según facturas - Consumido en ventas
+        return Object.values(map).map((prod) => {
+          const consumedCc = consumedByItem[prod.id] || 0;
+          const availableMl = Math.max(0, prod.totalPurchasedMl - consumedCc);
+          const availableBottles = prod.bottleSizeMl > 0 ? (availableMl / prod.bottleSizeMl).toFixed(1) : '0';
+          const isCritical = availableMl <= prod.minAlertMl;
+
+          return {
+            ...prod,
+            consumedCc,
+            availableMl,
+            availableBottles,
+            isCritical
+          };
+        });
+      }, [purchases, inventory, consumedByItem]);
+
+      const categories = useMemo(() => {
+        const s = new Set();
+        purchasedProducts.forEach((i) => s.add(i.category));
+        return ['ALL', ...Array.from(s)];
+      }, [purchasedProducts]);
+
+      const filteredProducts = useMemo(() => {
+        return purchasedProducts.filter((item) => {
+          if (filterCategory !== 'ALL' && item.category !== filterCategory) return false;
+          if (searchTerm && !item.name.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+          return true;
+        });
+      }, [purchasedProducts, filterCategory, searchTerm]);
+
+      const totalCcAvailable = useMemo(() => purchasedProducts.reduce((acc, i) => acc + i.availableMl, 0), [purchasedProducts]);
+      const totalPurchasedCcAll = useMemo(() => purchasedProducts.reduce((acc, i) => acc + i.totalPurchasedMl, 0), [purchasedProducts]);
+      const totalConsumedCcAll = useMemo(() => purchasedProducts.reduce((acc, i) => acc + i.consumedCc, 0), [purchasedProducts]);
+      const totalValuation = useMemo(
+        () => purchasedProducts.reduce((acc, i) => acc + (i.bottleSizeMl > 0 ? (i.availableMl / i.bottleSizeMl) * i.costPerBottle : 0), 0),
+        [purchasedProducts]
+      );
+      const criticalCount = useMemo(() => purchasedProducts.filter((p) => p.isCritical).length, [purchasedProducts]);
+
+      const handleConfirmAdjust = (e) => {
+        e.preventDefault();
+        const delta = parseFloat(adjustMl);
+        if (adjustItem && !isNaN(delta)) {
+          onUpdateStock(adjustItem.id, delta);
+          setAdjustItem(null);
+          setAdjustMl('');
+        }
+      };
+
+      return (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div>
+              <h2 className="text-2xl font-black text-white">Control de Stock Milimétrico (cc)</h2>
+              <p className="text-xs text-slate-400">
+                Productos tomados de Facturación & Compras menos consumo acumulado en barra = Stock Disponible
+              </p>
+            </div>
+            <button onClick={onOpenRestockModal} className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shadow-lg flex items-center gap-2">
+              <Icons.Plus className="w-4 h-4" /> Ingreso de Stock / Factura
+            </button>
+          </div>
+
+          {/* KPI Cards de Stock Disponible según Facturación */}
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+              <div className="text-slate-400 text-xs font-semibold mb-1">Comprado en Facturas</div>
+              <div className="text-2xl font-black text-cyan-400 font-mono">
+                {(totalPurchasedCcAll / 1000).toFixed(1)} <span className="text-sm font-normal text-slate-400">Litros</span>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">{totalPurchasedCcAll.toLocaleString('es-AR')} cc ingresados</div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+              <div className="text-slate-400 text-xs font-semibold mb-1">Consumo en Barras</div>
+              <div className="text-2xl font-black text-rose-400 font-mono">
+                -{(totalConsumedCcAll / 1000).toFixed(1)} <span className="text-sm font-normal text-slate-400">Litros</span>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">{totalConsumedCcAll.toLocaleString('es-AR')} cc descontados</div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+              <div className="text-slate-400 text-xs font-semibold mb-1">Stock Disponible Actual</div>
+              <div className="text-2xl font-black text-emerald-400 font-mono">
+                {(totalCcAvailable / 1000).toFixed(1)} <span className="text-sm font-normal text-slate-400">Litros</span>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">{totalCcAvailable.toLocaleString('es-AR')} cc disponibles para venta</div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+              <div className="text-slate-400 text-xs font-semibold mb-1">Valorización Remanente</div>
+              <div className="text-2xl font-black text-purple-400 font-mono">
+                ${Math.round(totalValuation).toLocaleString('es-AR')}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">{criticalCount > 0 ? `${criticalCount} productos en alerta` : 'Stock en niveles óptimos'}</div>
+            </div>
+          </div>
+
+          {/* Filtros */}
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 p-2.5 rounded-2xl border border-slate-800">
+            <div className="flex gap-1 overflow-x-auto">
+              {categories.map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setFilterCategory(cat)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${filterCategory === cat ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                >
+                  {cat === 'ALL' ? 'Todos los Productos Comprados' : cat}
+                </button>
+              ))}
+            </div>
+            <input
+              type="text"
+              placeholder="Buscar producto comprado..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white outline-none focus:border-purple-500 font-sans"
+            />
+          </div>
+
+          {/* Grilla de Tarjetas: Productos Comprados - Consumido = Disponible */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {filteredProducts.map((prod) => {
+              const maxRef = Math.max(prod.totalPurchasedMl, prod.bottleSizeMl * 2);
+              const availablePct = Math.min(100, Math.round((prod.availableMl / maxRef) * 100));
+
+              return (
+                <div key={prod.id} className={`bg-slate-900 border rounded-2xl p-4 flex flex-col justify-between space-y-3 ${prod.isCritical ? 'border-rose-700/60 shadow-lg shadow-rose-950/40' : 'border-slate-800'}`}>
+                  <div>
+                    <div className="flex justify-between items-start mb-1">
+                      <div>
+                        <h3 className="font-bold text-white text-sm">{prod.name}</h3>
+                        <span className="text-[10px] text-slate-400 font-semibold">{prod.category} &bull; {prod.bottleSizeMl}cc/bot.</span>
+                      </div>
+                      {prod.isCritical && (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse">
+                          STOCK BAJO
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Stock Disponible (Comprado - Consumido) */}
+                    <div className="mt-2 space-y-1 font-mono">
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-2xl font-black text-emerald-400">{prod.availableMl.toLocaleString('es-AR')}</span>
+                        <span className="text-xs text-slate-400 font-semibold">cc disponibles</span>
+                      </div>
+                      <div className="text-xs font-bold text-purple-300">
+                        ~ {prod.availableBottles} botellas disponibles
+                      </div>
+                    </div>
+
+                    {/* Barra de progreso de disponibilidad */}
+                    <div className="mt-2.5">
+                      <div className="flex justify-between text-[10px] font-mono text-slate-400 mb-1">
+                        <span>Disponibilidad</span>
+                        <span className={prod.isCritical ? 'text-rose-400 font-bold' : 'text-emerald-400 font-bold'}>{availablePct}%</span>
+                      </div>
+                      <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                        <div
+                          className={`h-full rounded-full transition-all duration-300 ${prod.isCritical ? 'bg-gradient-to-r from-rose-600 to-amber-500' : 'bg-gradient-to-r from-emerald-500 to-teal-400'}`}
+                          style={{ width: `${availablePct}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Desglose: Comprado en Facturas vs Consumido en Barra */}
+                    <div className="mt-3 pt-2.5 border-t border-slate-800/80 space-y-1.5 text-[11px] font-mono">
+                      <div className="flex justify-between text-slate-400">
+                        <span>Comprado (Facturas):</span>
+                        <span className="text-cyan-400 font-bold">+{prod.totalPurchasedMl.toLocaleString('es-AR')} cc ({prod.totalBottlesPurchased} bot.)</span>
+                      </div>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Consumo en Ventas:</span>
+                        <span className="text-rose-400 font-bold">-{prod.consumedCc.toLocaleString('es-AR')} cc</span>
+                      </div>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Alerta Mínima:</span>
+                        <span className="text-slate-300 font-bold">{prod.minAlertMl} cc</span>
+                      </div>
+                      {prod.costPerBottle > 0 && (
+                        <div className="flex justify-between text-slate-400">
+                          <span>Costo Unitario:</span>
+                          <span className="text-white font-bold">${prod.costPerBottle.toLocaleString('es-AR')}/u</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Acciones de Ajuste Rápido */}
+                  <div className="pt-2 border-t border-slate-800 flex gap-2">
+                    <button
+                      onClick={() => setAdjustItem(prod)}
+                      className="flex-1 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-[11px] flex items-center justify-center gap-1 transition-all"
+                    >
+                      <Icons.Edit3 className="w-3.5 h-3.5" /> Ajustar cc
+                    </button>
+                    <button
+                      onClick={() => onUpdateStock(prod.id, prod.bottleSizeMl)}
+                      className="px-2.5 py-1.5 rounded-xl bg-purple-600/30 hover:bg-purple-600 text-purple-300 hover:text-white font-bold text-[11px] border border-purple-800/50 transition-all"
+                      title="Sumar 1 botella completa"
+                    >
+                      +1 Bot.
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Modal Ajuste Rápido de Stock en CC */}
+          {adjustItem && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-4">
+                <div>
+                  <h3 className="text-base font-black text-white">Ajuste de Stock Disponible</h3>
+                  <p className="text-xs text-slate-400">{adjustItem.name} &bull; Disponible: {adjustItem.availableMl} cc</p>
+                </div>
+                <form onSubmit={handleConfirmAdjust} className="space-y-3 text-xs">
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">Variación en Centímetros Cúbicos (cc)</label>
+                    <input
+                      type="number"
+                      step="10"
+                      required
+                      autoFocus
+                      value={adjustMl}
+                      onChange={(e) => setAdjustMl(e.target.value)}
+                      placeholder="Ej: +750 (ingreso) o -100 (merma/rotura)"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white font-mono text-sm outline-none focus:border-purple-500"
+                    />
+                    <div className="flex gap-1.5 mt-2">
+                      <button type="button" onClick={() => setAdjustMl(`-${adjustItem.bottleSizeMl}`)} className="px-2 py-1 bg-slate-800 rounded text-[10px] text-rose-300 font-mono">-1 Botella</button>
+                      <button type="button" onClick={() => setAdjustMl(`+${adjustItem.bottleSizeMl}`)} className="px-2 py-1 bg-slate-800 rounded text-[10px] text-emerald-300 font-mono">+1 Botella</button>
+                      <button type="button" onClick={() => setAdjustMl('-250')} className="px-2 py-1 bg-slate-800 rounded text-[10px] text-amber-300 font-mono">-250cc (Merma)</button>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 pt-2">
+                    <button type="button" onClick={() => setAdjustItem(null)} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold">Cancelar</button>
+                    <button type="submit" className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black shadow-lg">Aplicar Ajuste</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ============================= CASHIER POS VIEW ==========================
+    // =========================================================================
+    function CashierPosView({
+      activeCashier,
+      salesHistory,
+      recipes,
+      inventory,
+      cart,
+      onAddToCart,
+      onRemoveFromCart,
+      onDeleteItemFromCart,
+      onClearCart,
+      onProcessSale,
+      autoPrint,
+      onToggleAutoPrint,
+      ticketFormat,
+      onChangeTicketFormat,
+      onOpenCloseCashModal
+    }) {
+      const [showSummaryDrawer, setShowSummaryDrawer] = useState(false);
+      const [selectedCategory, setSelectedCategory] = useState('ALL');
+
+      const mySales = useMemo(() => salesHistory.filter((s) => s.cashierId === activeCashier.id), [salesHistory, activeCashier]);
+      const accumulatedCash = useMemo(() => mySales.filter((s) => s.paymentMethod === 'EFECTIVO').reduce((acc, s) => acc + s.total, 0), [mySales]);
+      const accumulatedQr = useMemo(() => mySales.filter((s) => s.paymentMethod === 'MERCADO_PAGO').reduce((acc, s) => acc + s.total, 0), [mySales]);
+      const accumulatedCard = useMemo(() => mySales.filter((s) => s.paymentMethod === 'TARJETA').reduce((acc, s) => acc + s.total, 0), [mySales]);
+      const totalShiftSales = accumulatedCash + accumulatedQr + accumulatedCard;
+      const inDrawerPhysicalCash = accumulatedCash + (activeCashier.initialCash || 0);
+      const cartTotal = useMemo(() => cart.reduce((acc, it) => acc + it.price * it.qty, 0), [cart]);
+
+      const categories = useMemo(() => {
+        const set = new Set();
+        recipes.forEach((r) => set.add(r.category));
+        return ['ALL', ...Array.from(set)];
+      }, [recipes]);
+
+      const filteredRecipes = useMemo(() => {
+        if (selectedCategory === 'ALL') return recipes;
+        return recipes.filter((r) => r.category === selectedCategory);
+      }, [recipes, selectedCategory]);
+
+      return (
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden bg-slate-950">
+          <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-800">
+            <div className="p-3 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-sm text-white">{activeCashier.station}</span>
+                <span className="text-xs text-slate-400">({activeCashier.name})</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowSummaryDrawer((prev) => !prev)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-emerald-400 border border-slate-700"
+                >
+                  <Icons.Wallet className="w-3.5 h-3.5" />
+                  <span>Resumen: ${totalShiftSales.toLocaleString('es-AR')}</span>
+                  {showSummaryDrawer ? <Icons.ChevronUp className="w-3.5 h-3.5" /> : <Icons.ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+                <button
+                  onClick={onOpenCloseCashModal}
+                  className="px-3 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-600/40 text-xs font-bold transition-all"
+                >
+                  Cierre de Turno
+                </button>
+              </div>
+            </div>
+
+            {showSummaryDrawer && (
+              <div className="p-4 bg-slate-900/95 border-b border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-3 shrink-0">
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="text-[10px] text-slate-400 font-semibold">En Cajón (Físico)</div>
+                  <div className="text-base font-black text-emerald-400 font-mono">${inDrawerPhysicalCash.toLocaleString('es-AR')}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="text-[10px] text-slate-400 font-semibold">MercadoPago / QR</div>
+                  <div className="text-base font-black text-cyan-400 font-mono">${accumulatedQr.toLocaleString('es-AR')}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="text-[10px] text-slate-400 font-semibold">Tarjetas / Débito</div>
+                  <div className="text-base font-black text-purple-400 font-mono">${accumulatedCard.toLocaleString('es-AR')}</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="text-[10px] text-slate-400 font-semibold">Total Turno</div>
+                  <div className="text-base font-black text-white font-mono">${totalShiftSales.toLocaleString('es-AR')}</div>
+                </div>
+              </div>
+            )}
+
+            <div className="p-3 flex gap-1.5 overflow-x-auto shrink-0 bg-slate-950/60 border-b border-slate-850">
+              {categories.map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap ${selectedCategory === cat ? 'bg-purple-600 text-white' : 'bg-slate-900 text-slate-400'}`}
+                >
+                  {cat === 'ALL' ? 'Todos los Tragos' : cat}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {filteredRecipes.map((recipe) => (
+                <button
+                  key={recipe.id}
+                  onClick={() => onAddToCart(recipe)}
+                  className="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-purple-500 text-left flex flex-col justify-between active:scale-95 transition-all shadow-lg"
+                >
+                  <div>
+                    <div className="text-[10px] font-bold text-purple-400 uppercase tracking-wider mb-1">{recipe.category}</div>
+                    <h4 className="font-bold text-white text-sm">{recipe.name}</h4>
+                  </div>
+                  <div className="mt-3 flex justify-between items-end">
+                    <span className="text-xs text-slate-400 font-mono">{recipe.ingredients.reduce((a, b) => a + b.cc, 0)}cc</span>
+                    <span className="font-black text-emerald-400 font-mono text-base">${recipe.price.toLocaleString('es-AR')}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="w-full md:w-96 bg-slate-900 flex flex-col shrink-0">
+            <div className="p-4 border-b border-slate-800 flex justify-between items-center">
+              <div>
+                <h3 className="font-black text-white text-base">Comanda Activa</h3>
+                <p className="text-[11px] text-slate-400">{cart.length} ítems cargados</p>
+              </div>
+              {cart.length > 0 && (
+                <button onClick={onClearCart} className="text-xs text-rose-400 hover:text-rose-300 font-bold">Vaciar</button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {cart.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs">
+                  <Icons.ShoppingCart className="w-8 h-8 mb-2" />
+                  <span>Seleccioná tragos para cobrar</span>
+                </div>
+              ) : (
+                cart.map((item) => (
+                  <div key={item.id} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                    <div className="flex-1 pr-2">
+                      <div className="font-bold text-white text-xs">{item.name}</div>
+                      <div className="text-[10px] text-emerald-400 font-mono">${(item.price * item.qty).toLocaleString('es-AR')}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
+                        <button onClick={() => onRemoveFromCart(item.id)} className="text-slate-400 font-bold px-1">-</button>
+                        <span className="font-mono font-bold text-xs text-white min-w-[16px] text-center">{item.qty}</span>
+                        <button onClick={() => onAddToCart(item)} className="text-slate-400 font-bold px-1">+</button>
+                      </div>
+                      <button onClick={() => onDeleteItemFromCart(item.id)} className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400" title="Eliminar"><Icons.Trash2 className="w-4 h-4" /></button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-950 border-t border-slate-800 space-y-3">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 flex items-center gap-1.5 font-bold"><Icons.Printer className="w-3.5 h-3.5" /> Auto-Imprimir</span>
+                <div className="flex items-center gap-2">
+                  <select value={ticketFormat} onChange={(e) => onChangeTicketFormat(e.target.value)} className="bg-slate-900 text-slate-300 text-[10px] border border-slate-800 rounded px-1.5 py-0.5 outline-none font-bold">
+                    <option value="80mm">80mm</option>
+                    <option value="58mm">58mm</option>
+                  </select>
+                  <button onClick={onToggleAutoPrint} className={`w-9 h-5 rounded-full relative transition-colors ${autoPrint ? 'bg-purple-600' : 'bg-slate-800'}`}>
+                    <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-transform ${autoPrint ? 'translate-x-4' : 'translate-x-1'}`} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-between items-baseline pt-1">
+                <span className="text-xs text-slate-400 font-bold uppercase">Total a Cobrar</span>
+                <span className="text-2xl font-black text-white font-mono">${cartTotal.toLocaleString('es-AR')}</span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <button disabled={cart.length === 0} onClick={() => onProcessSale('EFECTIVO')} className="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-black text-xs flex flex-col items-center justify-center gap-1 shadow-lg">
+                  <Icons.Banknote className="w-4 h-4" /><span>Efectivo</span>
+                </button>
+                <button disabled={cart.length === 0} onClick={() => onProcessSale('MERCADO_PAGO')} className="py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white font-black text-xs flex flex-col items-center justify-center gap-1 shadow-lg">
+                  <Icons.QrCode className="w-4 h-4" /><span>MercadoPago</span>
+                </button>
+                <button disabled={cart.length === 0} onClick={() => onProcessSale('TARJETA')} className="py-3 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-black text-xs flex flex-col items-center justify-center gap-1 shadow-lg">
+                  <Icons.CreditCard className="w-4 h-4" /><span>Tarjeta</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function CloseCashModal({ cashier, salesHistory, onClose }) {
+      const cashSales = salesHistory.filter((s) => s.paymentMethod === 'EFECTIVO').reduce((acc, s) => acc + s.total, 0);
+      const qrSales = salesHistory.filter((s) => s.paymentMethod === 'MERCADO_PAGO').reduce((acc, s) => acc + s.total, 0);
+      const cardSales = salesHistory.filter((s) => s.paymentMethod === 'TARJETA').reduce((acc, s) => acc + s.total, 0);
+      const totalSales = cashSales + qrSales + cardSales;
+      const inDrawer = cashSales + cashier.initialCash;
+
+      return (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+            <h3 className="text-base font-black text-white">Arqueo & Cierre de Caja</h3>
+            <p className="text-xs text-slate-400">{cashier.name} &bull; {cashier.station}</p>
+            <div className="space-y-2 p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono">
+              <div className="flex justify-between text-slate-400"><span>Fondo Inicial:</span><span>${cashier.initialCash.toLocaleString('es-AR')}</span></div>
+              <div className="flex justify-between text-slate-400"><span>Ventas Efectivo:</span><span>${cashSales.toLocaleString('es-AR')}</span></div>
+              <div className="flex justify-between text-cyan-400"><span>Ventas MercadoPago:</span><span>${qrSales.toLocaleString('es-AR')}</span></div>
+              <div className="flex justify-between text-purple-400"><span>Ventas Tarjeta:</span><span>${cardSales.toLocaleString('es-AR')}</span></div>
+              <div className="border-t border-slate-800 pt-2 flex justify-between text-sm font-black text-white"><span>TOTAL VENTAS:</span><span>${totalSales.toLocaleString('es-AR')}</span></div>
+              <div className="border-t border-slate-800 pt-2 flex justify-between text-sm font-black text-emerald-400"><span>EFECTIVO A ENTREGAR:</span><span>${inDrawer.toLocaleString('es-AR')}</span></div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={onClose} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs">Volver</button>
+              <button onClick={() => { window.print(); onClose(); }} className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shadow-lg flex items-center justify-center gap-1.5">
+                <Icons.Printer className="w-3.5 h-3.5" /> Imprimir Cierre
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // ============================ MOUNT REACT APP ============================
+    // =========================================================================
+    const rootElement = document.getElementById('root');
+    const root = ReactDOM.createRoot(rootElement);
+    root.render(<App />);
+  </script>
+</body>
+</html>
