@@ -102,15 +102,71 @@
     const db = getFirestore(app);
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'tangalagua-boliche-app';
 
-    // Helper de sincronización directa a Firestore
+    // Helper de sincronización directa adaptado estrictamente a las reglas de Firestore
+    // - Colecciones administrativas (inventory, recipes, cashiers, purchases) -> match /settings/{docId} (write: isAdmin())
+    // - Ventas de barra y tickets -> match /tickets/{ticketId} (write: auth != null)
+    // - Eventos de noche -> match /events/{eventId} (write: isAdmin())
     const syncLiveCollection = async (collectionKey, items) => {
       try {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'boliche_state', collectionKey), {
-          items,
+        let docPath = null;
+        if (collectionKey === 'sales') {
+          docPath = doc(db, 'tickets', 'tangalagua_pos_sales');
+        } else if (collectionKey === 'events') {
+          docPath = doc(db, 'events', 'tangalagua_active_events');
+        } else {
+          // 'inventory', 'recipes', 'cashiers', 'purchases' se guardan en /settings/{docId}
+          docPath = doc(db, 'settings', `tangalagua_${collectionKey}`);
+        }
+
+        await setDoc(docPath, {
+          items: items || [],
           updatedAt: new Date().toISOString()
-        });
+        }, { merge: true });
+        console.log(`✓ Firestore guardado en [${docPath.path}] exitoso`);
       } catch (err) {
-        console.error(`Error al escribir en vivo en Firestore [${collectionKey}]:`, err);
+        console.warn(`Firestore SDK aviso para [${collectionKey}], intentando persistencia REST...`, err);
+
+        try {
+          let token = null;
+          if (auth.currentUser) {
+            token = await auth.currentUser.getIdToken(true);
+          }
+
+          let pathName = '';
+          if (collectionKey === 'sales') {
+            pathName = 'tickets/tangalagua_pos_sales';
+          } else if (collectionKey === 'events') {
+            pathName = 'events/tangalagua_active_events';
+          } else {
+            pathName = `settings/tangalagua_${collectionKey}`;
+          }
+
+          const firestoreRestUrl = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/${pathName}`;
+          const headers = { 'Content-Type': 'application/json' };
+          if (token) headers['Authorization'] = `Bearer ${token}`;
+
+          const payload = {
+            fields: {
+              itemsJson: { stringValue: JSON.stringify(items || []) },
+              updatedAt: { stringValue: new Date().toISOString() }
+            }
+          };
+
+          const res = await fetch(firestoreRestUrl, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify(payload)
+          });
+
+          if (res.ok) {
+            console.log(`✓ Firestore guardado REST exitoso en [${pathName}]`);
+          } else {
+            const errData = await res.json();
+            console.error('Error REST Firestore:', errData);
+          }
+        } catch (restErr) {
+          console.error(`Error al persistir en Firestore [${collectionKey}]:`, restErr);
+        }
       }
     };
 
@@ -341,68 +397,59 @@
       // Modales & POS States
       const [showAddCashierModal, setShowAddCashierModal] = useState(false);
       const [showPurchaseModal, setShowPurchaseModal] = useState(false);
-      const [purchaseToEdit, setPurchaseToEdit] = useState(null);
-      const [showRecipeModal, setShowRecipeModal] = useState(false);
-      const [showCloseCashModal, setShowCloseCashModal] = useState(false);
-      const [cashierToAssignCash, setCashierToAssignCash] = useState(null);
-      const [lastSaleTicket, setLastSaleTicket] = useState(null);
-      const [autoPrint, setAutoPrint] = useState(true);
-      const [ticketFormat, setTicketFormat] = useState('80mm');
-      const [cart, setCart] = useState([]);
-
-      // 1. Inicialización y Conexión en Vivo con Firebase / Firestore
+      // 1. Inicialización y Conexión en Vivo con Firebase / Firestore según las Reglas
       useEffect(() => {
         let isMounted = true;
-
-        const initAuthAndLive = async () => {
-          try {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-              await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-              await signInAnonymously(auth);
-            }
-          } catch (err) {
-            console.warn('Nota Auth: Ingresando en modo directo Firestore sin token:', err);
-          }
-        };
-
-        initAuthAndLive();
 
         const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
           if (isMounted) setFirebaseUser(user);
         });
 
-        // Escucha en vivo de Firestore (no depende de que auth devuelva user si está configurado para acceso público)
-        const publicDataCollection = collection(db, 'artifacts', appId, 'public', 'data', 'boliche_state');
-        const unsubscribeSnapshot = onSnapshot(
-          publicDataCollection,
-          (snapshot) => {
-            if (!isMounted) return;
-            setIsLiveConnected(true);
-            snapshot.forEach((documentSnap) => {
-              const data = documentSnap.data();
-              if (documentSnap.id === 'inventory' && Array.isArray(data?.items)) setInventory(data.items);
-              if (documentSnap.id === 'recipes' && Array.isArray(data?.items)) setRecipes(data.items);
-              if (documentSnap.id === 'cashiers' && Array.isArray(data?.items)) setCashiers(data.items);
-              if (documentSnap.id === 'purchases' && Array.isArray(data?.items)) setPurchases(data.items);
-              if (documentSnap.id === 'sales' && Array.isArray(data?.items)) setSalesHistory(data.items);
-            });
-          },
-          (error) => {
-            console.warn('Firestore onSnapshot aviso:', error);
-            if (isMounted) {
-              // Si la suscripción websocket se demora, probamos escribir un pulso de salud
+        // Suscripción a documentos bajo las reglas habilitadas:
+        // /settings (inventario, recetas, cajeros, compras) y /tickets (ventas)
+        const docsToListen = [
+          { key: 'inventory', ref: doc(db, 'settings', 'tangalagua_inventory') },
+          { key: 'recipes', ref: doc(db, 'settings', 'tangalagua_recipes') },
+          { key: 'cashiers', ref: doc(db, 'settings', 'tangalagua_cashiers') },
+          { key: 'purchases', ref: doc(db, 'settings', 'tangalagua_purchases') },
+          { key: 'sales', ref: doc(db, 'tickets', 'tangalagua_pos_sales') }
+        ];
+
+        const unsubscribers = docsToListen.map(({ key, ref: docRef }) => {
+          return onSnapshot(
+            docRef,
+            (snap) => {
+              if (!isMounted) return;
               setIsLiveConnected(true);
+              if (snap.exists()) {
+                const data = snap.data();
+                let items = Array.isArray(data?.items) ? data.items : null;
+                if (!items && data?.itemsJson) {
+                  try { items = JSON.parse(data.itemsJson); } catch (e) {}
+                }
+
+                if (items && Array.isArray(items)) {
+                  if (key === 'inventory') setInventory(items);
+                  if (key === 'recipes') setRecipes(items);
+                  if (key === 'cashiers') setCashiers(items);
+                  if (key === 'purchases') setPurchases(items);
+                  if (key === 'sales') setSalesHistory(items);
+                }
+              }
+            },
+            (error) => {
+              console.warn(`Firestore onSnapshot en [${docRef.path}]:`, error);
+              if (isMounted) setIsLiveConnected(true);
             }
-          }
-        );
+          );
+        });
 
         return () => {
           isMounted = false;
           unsubscribeAuth();
-          unsubscribeSnapshot();
+          unsubscribers.forEach((unsub) => unsub());
         };
-      }, []);
+      }, [firebaseUser]);
 
       const activeCashier = useMemo(
         () => cashiers.find((c) => c.id === currentCashierId) || cashiers[0],
